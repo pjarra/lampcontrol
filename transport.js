@@ -133,18 +133,19 @@
     }
     // build(key) returns the 17-byte packet. Commands closer than MIN_GAP are
     // swallowed by the lamp (upstream hardware notes), so wait instead.
-    async send(description, build) {
+    // gap: minimum ms since the previous write (the app writes schedule pairs ~0.1 s apart).
+    async send(description, build, gap = MIN_GAP) {
       if (this.busy) throw fail('BUSY', 'A Bluetooth operation is already running.');
       if (!this.ready || !this.device?.gatt?.connected || !this.key) throw fail('NOT_AUTHENTICATED', 'Connect and authenticate first.');
       this.busy = true; this.changed();
       const generation = this.generation;
       try {
-        const wait = MIN_GAP - (Date.now() - this.lastWrite);
+        const wait = gap - (Date.now() - this.lastWrite);
         if (wait > 0) { await this.pause(wait); this.assertCurrent(generation); }
         const packet = await build(this.key);
         this.assertCurrent(generation);
         this.lastWrite = Date.now();
-        this.log('Sending ' + description + ': 17 bytes, ' + this.command.mode + '.');
+        this.log('Sending ' + description + ': ' + packet.length + ' bytes, ' + this.command.mode + '.');
         await this.bounded(this.command.send(packet), generation, 'Command write');
       } catch (error) {
         // A failed/timeout write may already have reached the lamp. Never retry it.

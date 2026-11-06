@@ -115,10 +115,11 @@
   }
   // Weekday mask bit 0 = Sunday (verified on hardware), same as Date.getDay().
   // Query frames (wire flag 0x02) have no destination header: [CRC][length][payload][zero pad].
+  // Longer frames: only the first 16 bytes are encrypted, the rest is sent in the clear.
   function queryBlock(payload) {
     const fields = Uint8Array.of(payload.length, ...payload);
-    if (fields.length > 15) throw new Error('Query too long for one block');
-    const block = new Uint8Array(16);
+    if (fields.length > 39) throw new Error('Query too long');
+    const block = new Uint8Array(Math.max(16, fields.length + 1));
     block[0] = crc8(fields); block.set(fields, 1);
     return block;
   }
@@ -128,6 +129,15 @@
     const since2000 = intIn(unixSeconds - EPOCH_2000, [0, 0xFFFFFFFF], 'Clock');
     intIn(utcOffsetSeconds, [-14 * 3600, 14 * 3600], 'UTC offset');
     return queryBlock([0x30, ...le32(since2000), ...le32(utcOffsetSeconds >>> 0)]);
+  }
+  function timezoneBlock(unixSeconds, posixTZ) {
+    // [0x29][seconds since 2000, LE32][POSIX TZ rule, ASCII, zero-padded to 32].
+    // Sent by the AwoX app before the clock frame; the lamp then handles DST itself.
+    const since2000 = intIn(unixSeconds - EPOCH_2000, [0, 0xFFFFFFFF], 'Clock');
+    if (!/^[\x20-\x7e]{1,32}$/.test(posixTZ)) throw new Error('Bad time zone rule');
+    const tz = new Uint8Array(32);
+    tz.set(Array.from(posixTZ, c => c.charCodeAt(0)));
+    return queryBlock([0x29, ...le32(since2000), ...tz]);
   }
   function scheduleBlock(s) {
     // 12-byte schedule body after opcode 0x33; layout in upstream docs/protocol.md.
@@ -160,9 +170,10 @@
   async function packet(key, block, flag = 0) {
     if (key.length !== 16) throw new Error('Expected 16-byte session key');
     try {
-      const out = new Uint8Array(17); // command flag 0x00: no allowed address has high byte 0x80
+      const out = new Uint8Array(1 + block.length); // command flag 0x00: no allowed address has high byte 0x80
       out[0] = flag;
-      out.set(await attEncrypt(key, block), 1);
+      out.set(await attEncrypt(key, block.subarray(0, 16)), 1);
+      out.set(block.subarray(16), 17);
       return out;
     } finally { block.fill(0); }
   }
@@ -173,6 +184,7 @@
   const candlePacket = (key, level, target) => packet(key, candleBlock(level, target));
   const clockPacket = (key, unixSeconds, utcOffsetSeconds) => packet(key, clockBlock(unixSeconds, utcOffsetSeconds), 2);
   const schedulePacket = (key, schedule) => packet(key, scheduleBlock(schedule), 2);
+  const timezonePacket = (key, unixSeconds, posixTZ) => packet(key, timezoneBlock(unixSeconds, posixTZ), 2);
   async function selfTest() {
     // Public dummy credentials only. Generated independently by upstream Python.
     const n = credentials('meshname'), p = credentials('meshpass');
@@ -219,6 +231,12 @@
     if (appOn !== '260d330000873d06be1e0164f9001000' || appOff !== '1d0d330000887928be00000000001100') {
       throw new Error('Schedule pair self-test failed');
     }
+    // The app's time-zone frame (capture), plaintext and encrypted with the dummy key.
+    const tzRule = 'CET-1CEST,M3.5.0/2,M10.5.0/3';
+    if (hex(timezoneBlock(1793985122, tzRule)) !== '322529e2c680324345542d3143455354' + '2c4d332e352e302f322c4d31302e352e302f3300000000' ||
+        hex(await timezonePacket(key, 1793985122, tzRule)) !== '02622b8c83769b81ee0eba12b77b10103a2c4d332e352e302f322c4d31302e352e302f3300000000') {
+      throw new Error('Time zone self-test failed');
+    }
     const results = await Promise.all(expect.map(([promise]) => promise));
     if (hex(pair) !== '0c00010203040506077f4e2d01cbd9af89' ||
         hex(key) !== '03a53246e89ea73e0a5d38ae66d370d6' ||
@@ -229,7 +247,7 @@
     return true;
   }
   const api = {TARGETS, RANGE, ROUTINE, PARTS, hex, credentials, attEncrypt, crc8, pairPacket, sessionKey, powerBlock, brightnessBlock, temperatureBlock,
-    colorBlock, candleBlock, queryBlock, clockBlock, scheduleBlock,
+    colorBlock, candleBlock, queryBlock, clockBlock, timezoneBlock, scheduleBlock, timezonePacket,
     powerPacket, brightnessPacket, temperaturePacket, colorPacket, candlePacket, clockPacket, schedulePacket, selfTest};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.AwoxProtocol = api;

@@ -25,35 +25,46 @@ PAIR_HANDLE, COMMAND_HANDLE, STATUS_HANDLE = 0x001E, 0x0015, 0x0012
 
 def main(capture, out_path):
     packets = list(att_packets(capture))
-    pair_write = next(v for _, _, _, n, h, v in packets if n == 'write_req' and h == PAIR_HANDLE)
-    pair_reply = next(v for _, _, _, n, _, v in packets if n == 'read_rsp' and v[:1] == b'\x0d')
-    client_random, proof, server_random = pair_write[1:9], pair_write[9:17], pair_reply[1:9]
-
     name = getpass.getpass('Mesh name (hidden): ').encode()
     password = getpass.getpass('Mesh password (hidden): ').encode()
     combined = ap.combine_credentials(name, password)
-    if ap.att_encrypt(client_random, combined)[:8] != proof:
-        sys.exit('These credentials do not match the login in the capture. Nothing written.')
-    key = ap.make_session_key(name, password, client_random, server_random)
-    del name, password, combined
 
-    lines = []
-    for ts, direction, _, op, handle, value in packets:
+    # One session key per login: a capture can hold several connections (lamps),
+    # and a connection can log in again. The key applies to the frames after its login.
+    keys, pending, matched = {}, {}, 0
+    for i, (_, _, conn, op, handle, value) in enumerate(packets):
+        if op == 'write_req' and handle == PAIR_HANDLE and value[:1] == b'\x0c':
+            pending[conn] = value
+        elif op == 'read_rsp' and conn in pending and value[:1] == b'\x0d':
+            pair = pending.pop(conn)
+            if ap.att_encrypt(pair[1:9], combined)[:8] != pair[9:17]:
+                continue
+            matched += 1
+            keys[i] = (conn, ap.make_session_key(name, password, pair[1:9], value[1:9]))
+    del name, password, combined
+    if not matched:
+        sys.exit('These credentials do not match any login in the capture. Nothing written.')
+
+    lines, current = [], {}
+    for i, (ts, direction, conn, op, handle, value) in enumerate(packets):
+        if i in keys:
+            current[keys[i][0]] = keys[i][1]
+            lines.append(f'--- login on connection {conn:#x}')
         if not ((op == 'write_req' and handle == COMMAND_HANDLE) or (op == 'notify' and handle == STATUS_HANDLE)):
             continue
-        if len(value) < 17:
+        if len(value) < 17 or conn not in current:
             continue
-        block = ap.att_decrypt(key, value[1:17])
+        block = ap.att_decrypt(current[conn], value[1:17])
         # Command frames: CRC over block[1 : 1+len+1]; query frames: CRC over [len] + payload.
         n = block[1]
         crc_ok = n + 2 <= 16 and ap.crc8(block[1:n + 2]) == block[0]
         t = datetime.fromtimestamp(ts).strftime('%H:%M:%S.%f')[:-3]
-        lines.append(f'{t} {direction} flag={value[0]:02x} block={block.hex()} crc={"ok" if crc_ok else "?"}'
+        lines.append(f'{t} conn={conn:#x} {direction} flag={value[0]:02x} block={block.hex()} crc={"ok" if crc_ok else "?"}'
                      + (f' tail={value[17:].hex()}' if len(value) > 17 else ''))
-    key = None
+    keys = current = None
     with open(out_path, 'w') as f:
         f.write('\n'.join(lines) + '\n')
-    print(f'Wrote {len(lines)} frames to {out_path}.')
+    print(f'Decrypted {matched} login(s); wrote {len(lines)} lines to {out_path}.')
 
 
 if __name__ == '__main__':

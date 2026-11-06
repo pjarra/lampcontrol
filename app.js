@@ -50,6 +50,17 @@
   function pickerFilter(prefix) {
     return {filters: [{manufacturerData: [{companyIdentifier: 0x0160, dataPrefix: Uint8Array.from(prefix)}]}]};
   }
+  // POSIX TZ rule for the lamp, like the AwoX app sends (e.g. CET-1CEST,M3.5.0/2,M10.5.0/3).
+  // Only EU-style zones are derived; elsewhere null, and only the clock offset is sent.
+  function posixTZ() {
+    const year = new Date().getFullYear();
+    const std = -new Date(year, 0, 1).getTimezoneOffset(), dst = -new Date(year, 6, 1).getTimezoneOffset();
+    const zone = (Intl.DateTimeFormat().resolvedOptions().timeZone || '');
+    const names = {0: ['WET', 'WEST'], 60: ['CET', 'CEST'], 120: ['EET', 'EEST']}[std];
+    if (!zone.startsWith('Europe/') || dst !== std + 60 || !names) return null;
+    const h = std / 60; // EU changes at 01:00 UTC
+    return names[0] + (h ? '-' + h : '0') + names[1] + ',M3.5.0/' + (1 + h) + ',M10.5.0/' + (2 + h);
+  }
   function kelvin(mired) { return Math.round(1e6 / mired / 50) * 50; }
   // 0 % = warmest (454 mired), 100 % = coldest (153 mired).
   function whitePercent(mired) { return Math.round((454 - mired) / 3.01); }
@@ -108,6 +119,7 @@
           $('status').textContent = lamp.name + ' connected.';
           // Schedules need the lamp clock; it stores a fixed UTC offset, so refresh on every connect (DST).
           lamp.lastActivity = Date.now();
+          queue(lamp, 'timezone', null);
           queue(lamp, 'clock', null);
         })
         .catch(error => reportError(lamp, error));
@@ -196,6 +208,7 @@
         record.mired = 607 - Number(q('sch-mired').value);
         Object.assign(schedule, {brightness: record.brightness, mired: record.mired});
       } else schedule.keepLight = true;
+      queue(lamp, 'timezone', null);
       queue(lamp, 'clock', null);
       queue(lamp, 'schedule:' + def.routine, schedule);
       if (offPart) queue(lamp, 'schedule:' + def.offRoutine, offPart);
@@ -216,6 +229,10 @@
     brightness: v => ['brightness ' + v, key => P.brightnessPacket(key, v, CONNECTED)],
     temperature: m => ['temperature ' + m + ' mired', key => P.temperaturePacket(key, m, CONNECTED)],
     color: ([h, s]) => ['colour hue ' + h + ' sat ' + s, key => P.colorPacket(key, h, s, CONNECTED)],
+    timezone: () => {
+      const rule = posixTZ();
+      return rule ? ['time zone ' + rule, key => P.timezonePacket(key, Math.floor(Date.now() / 1000), rule)] : null;
+    },
     clock: () => {
       const now = Math.floor(Date.now() / 1000), offset = -new Date().getTimezoneOffset() * 60;
       return ['clock (UTC offset ' + offset / 3600 + ' h)', key => P.clockPacket(key, now, offset)];
@@ -223,7 +240,8 @@
     schedule: s => ['schedule routine ' + s.routine + (s.offPart ? ' (off-part)' : '') + ': ' + (s.enabled ? (s.offPart ? 'OFF' : s.on ? 'ON' : 'OFF') +
       ' at ' + s.hour + ':' + String(s.minute).padStart(2, '0') + ', weekdays 0x' + s.weekdays.toString(16) +
       (s.offPart ? '' : ', fade ' + s.fade + ' min' + (s.keepLight ? ', light unchanged' : ', ' + s.brightness + ' %, ' + s.mired + ' mired'))
-      : 'disabled') + ', parts 0x' + (s.parts ?? 1).toString(16).padStart(2, '0'), key => P.schedulePacket(key, s)]
+      : 'disabled') + ', parts 0x' + (s.parts ?? 1).toString(16).padStart(2, '0'), key => P.schedulePacket(key, s),
+      s.offPart ? 100 : undefined] // like the app: off-part right after its on-part
   };
   // Coalesce: slider drags replace the pending value, so only the newest is sent.
   function queue(lamp, kind, value) {
@@ -241,9 +259,11 @@
     if (s.busy || !s.ready || !lamp.pending.size) return;
     const [kind, value] = lamp.pending.entries().next().value;
     lamp.pending.delete(kind);
-    const [description, build] = COMMANDS[kind.split(':')[0]](value);
+    const command = COMMANDS[kind.split(':')[0]](value);
+    if (!command) { pump(lamp); return; } // e.g. no time zone rule for this zone
+    const [description, build, gap] = command;
     lamp.lastActivity = Date.now();
-    try { await s.send(description, build); } catch (error) { reportError(lamp, error); }
+    try { await s.send(description, build, gap); } catch (error) { reportError(lamp, error); }
   }
 
   function syncAll() {
