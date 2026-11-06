@@ -22,3 +22,10 @@ select{margin-top:6px}
 footer{margin:24px 0 8px;color:#5b7168;text-align:center}
 #update{display:flex;align-items:center;justify-content:space-between;gap:12px}
 #update[hidden]{display:none}
+.scene-list{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.scene{display:flex;gap:8px;align-items:center}
+.scene .scene-apply{flex:1;text-align:left}
+.scene-lamps{display:flex;flex-direction:column;gap:6px;margin-top:14px}
+.scene-lamps label{display:flex;gap:8px;align-items:center;margin:0;font-weight:500}
+.scene-lamps input{width:auto;margin:0}
+#scene-url{margin-top:10px}

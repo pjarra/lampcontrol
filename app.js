@@ -193,6 +193,15 @@
     q('hue').addEventListener('input', sendColor);
     q('saturation').addEventListener('input', sendColor);
     showBrightness(); showTemperature(); showColor();
+    lamp.state = {on: null, mode: null, touched: false};
+    // Scene entry from the controls: b = brightness 2..254, t = mired, c = [hue, saturation].
+    lamp.snapshot = () => ({id: lamp.id, name: lamp.name, on: lamp.state.on ?? true, b: Number(q('brightness').value),
+      ...(lamp.state.mode === 'color' ? {c: [Number(q('hue').value), Number(q('saturation').value)]} : {t: 607 - Number(q('temperature').value)})});
+    lamp.applyUI = s => {
+      if (s.b) { q('brightness').value = s.b; showBrightness(); }
+      if (s.t) { q('temperature').value = 607 - s.t; showTemperature(); }
+      if (s.c) { q('hue').value = s.c[0]; q('saturation').value = s.c[1]; showColor(); }
+    };
 
     // Schedules: one slot per routine type in the lamp.
     const box = q('schedules');
@@ -313,6 +322,11 @@
       else if (meshCapable && MESH.device) { if (!MESH.session.busy) MESH.reconnect(); }
       else if (!(meshCapable && MESH.session.busy) && !lamp.session.busy) return;
     }
+    // What the page last set, for "Save current as scene" (lamps cannot be read back).
+    if (kind === 'power') lamp.state.on = value;
+    if (kind === 'temperature') lamp.state.mode = 'white';
+    if (kind === 'color') lamp.state.mode = 'color';
+    if (MESH_KINDS.has(kind)) lamp.state.touched = true;
     // Power supersedes pending slider moves; the latest colour mode wins.
     if (kind === 'power') for (const k of SLIDER_KINDS) lamp.pending.delete(k);
     if (kind === 'temperature') lamp.pending.delete('color');
@@ -380,6 +394,114 @@
   for (const [id, on] of [['all-on', true], ['all-off', false]]) {
     $(id).addEventListener('click', () => { for (const lamp of LAMPS) queue(lamp, 'power', on); });
   }
+  // ---- Scenes: named settings for several lamps, kept in this browser; a link carries
+  // a whole scene (to another device, or as a home-screen bookmark).
+  const SCENES_KEY = 'scenes';
+  const inRange = (v, [lo, hi]) => Number.isInteger(v) && v >= lo && v <= hi;
+  function validScene(s) {
+    // Also used for scenes from links, which are untrusted input.
+    if (!s || typeof s.name !== 'string' || !s.name.trim() || s.name.length > 30 || !Array.isArray(s.lamps) || !s.lamps.length || s.lamps.length > 20) return null;
+    const lamps = [];
+    for (const l of s.lamps) {
+      if (!l || !/^[0-9a-f]{12}$/.test(l.id) || typeof l.on !== 'boolean') return null;
+      const entry = {id: l.id, name: String(l.name || '').slice(0, 40), on: l.on};
+      if (l.on) {
+        if (!inRange(l.b, P.RANGE.brightness)) return null;
+        entry.b = l.b;
+        if (l.c) { if (!Array.isArray(l.c) || !l.c.every(v => inRange(v, P.RANGE.byte))) return null; entry.c = [l.c[0], l.c[1]]; }
+        else if (inRange(l.t, P.RANGE.mired)) entry.t = l.t; else return null;
+      }
+      lamps.push(entry);
+    }
+    return {name: s.name.trim(), lamps};
+  }
+  let scenes = (Array.isArray(storageGet(SCENES_KEY)) ? storageGet(SCENES_KEY) : []).map(validScene).filter(Boolean);
+  const saveScenes = () => storageSet(SCENES_KEY, scenes);
+  function encodeScene(s) {
+    const bytes = new TextEncoder().encode(JSON.stringify(s));
+    return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function decodeScene(text) {
+    try {
+      const bin = atob(text.replace(/-/g, '+').replace(/_/g, '/'));
+      return validScene(JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, ch => ch.charCodeAt(0)))));
+    } catch (_) { return null; }
+  }
+  const sceneURL = s => location.origin + location.pathname + '?scene=' + encodeScene(s);
+  const describe = l => !l.on ? 'off' : Math.round((l.b - 2) / 2.52) + ' %, ' +
+    (l.c ? 'colour ' + Math.round(l.c[0] * 360 / 254) + '°' : 'white ' + whitePercent(l.t) + ' %');
+
+  function applyScene(scene) {
+    const targets = scene.lamps.map(sl => [LAMPS.find(l => l.id === sl.id) || LAMPS.find(l => sl.name && l.name === sl.name), sl])
+      .filter(([lamp]) => lamp);
+    const unreachable = lamp => !(lamp.session.ready || lamp.device || (lamp.meshOK && (MESH.session.ready || MESH.device || MESH.session.busy)));
+    // Nothing connected or known yet: open the mesh picker from this tap, then send.
+    if (targets.some(([lamp]) => unreachable(lamp) && lamp.meshOK)) $('mesh-connect').click();
+    for (const [lamp, sl] of targets) {
+      queue(lamp, 'power', sl.on);
+      if (sl.on) { queue(lamp, 'brightness', sl.b); if (sl.c) queue(lamp, 'color', sl.c); else queue(lamp, 'temperature', sl.t); }
+      lamp.applyUI(sl);
+    }
+    const missing = scene.lamps.length - targets.length;
+    $('status').textContent = 'Scene “' + scene.name + '” sent' + (missing ? '; ' + missing + ' lamp(s) of it are not in this lamp list.' : '.');
+  }
+
+  function renderScenes() {
+    const list = $('scene-list');
+    list.replaceChildren();
+    $('scene-empty').hidden = scenes.length > 0;
+    scenes.forEach((scene, index) => {
+      const row = document.createElement('div'); row.className = 'scene';
+      const apply = document.createElement('button'); apply.className = 'scene-apply'; apply.textContent = scene.name;
+      apply.title = scene.lamps.map(l => (l.name || l.id) + ': ' + describe(l)).join('\n');
+      apply.addEventListener('click', () => applyScene(scene));
+      const link = document.createElement('button'); link.className = 'secondary compact'; link.textContent = 'Link';
+      link.addEventListener('click', async () => {
+        const url = sceneURL(scene);
+        try { if (navigator.share) { await navigator.share({title: scene.name, url}); return; } } catch (_) { /* cancelled: fall back */ }
+        try { await navigator.clipboard.writeText(url); link.textContent = 'Copied'; setTimeout(() => { link.textContent = 'Link'; }, 2000); }
+        catch (_) { $('scene-url').hidden = false; $('scene-url').value = url; $('scene-url').select(); }
+      });
+      const del = document.createElement('button'); del.className = 'secondary compact'; del.textContent = 'Delete';
+      del.addEventListener('click', () => {
+        if (del.textContent !== 'Sure?') { del.textContent = 'Sure?'; setTimeout(() => { del.textContent = 'Delete'; }, 3000); return; }
+        scenes.splice(index, 1); saveScenes(); renderScenes();
+      });
+      row.append(apply, link, del); list.append(row);
+    });
+  }
+  $('scene-new').addEventListener('click', () => {
+    const box = $('scene-lamps');
+    box.replaceChildren();
+    for (const lamp of LAMPS) {
+      const label = document.createElement('label'), check = document.createElement('input');
+      check.type = 'checkbox'; check.checked = lamp.state.touched; check.dataset.id = lamp.id;
+      label.append(check, ' ' + lamp.name + ' · ' + describe(lamp.snapshot()));
+      box.append(label);
+    }
+    $('scene-editor').hidden = false; $('scene-name').focus();
+  });
+  $('scene-cancel').addEventListener('click', () => { $('scene-editor').hidden = true; });
+  $('scene-save').addEventListener('click', () => {
+    const ids = [...$('scene-lamps').querySelectorAll('input:checked')].map(c => c.dataset.id);
+    const scene = validScene({name: $('scene-name').value, lamps: LAMPS.filter(l => ids.includes(l.id)).map(l => l.snapshot())});
+    if (!scene) { $('status').textContent = 'Give the scene a name (up to 30 characters) and include at least one lamp.'; return; }
+    scenes = scenes.filter(s => s.name !== scene.name).concat(scene);
+    saveScenes(); renderScenes();
+    $('scene-editor').hidden = true; $('scene-name').value = '';
+    $('status').textContent = 'Scene “' + scene.name + '” saved in this browser.';
+  });
+  // A scene from a link (?scene=…): offer to apply or keep it.
+  const incoming = decodeScene(new URLSearchParams(location.search).get('scene') || '');
+  if (incoming) {
+    $('incoming-name').textContent = incoming.name; $('scene-incoming').hidden = false;
+    $('incoming-apply').addEventListener('click', () => applyScene(incoming));
+    $('incoming-save').addEventListener('click', () => {
+      scenes = scenes.filter(s => s.name !== incoming.name).concat(incoming); saveScenes(); renderScenes();
+      $('status').textContent = 'Scene “' + incoming.name + '” saved in this browser.';
+    });
+  }
+
   $('copy').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText($('log').value); $('copy').textContent = 'Copied'; }
     catch (_) { $('log').focus(); $('log').select(); $('copy').textContent = 'Select & copy'; }
@@ -470,6 +592,8 @@
     } else if (bootOK) log('This browser has no getDevices(); pick each lamp once per visit.');
     for (const lamp of LAMPS) lamp.sync();
     syncAll();
+    $('scene-new').disabled = !bootOK || !LAMPS.length;
+    renderScenes();
   })();
   syncAll();
 })();

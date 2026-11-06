@@ -75,6 +75,23 @@
       <p class="small sch-saved"></p>
     </div>
   </template>
+  <section class="card" id="scenes-card">
+    <div class="section-head"><h2>Scenes</h2><button id="scene-new" class="secondary compact" disabled>Save current as scene</button></div>
+    <div id="scene-incoming" class="notice" hidden>
+      <strong>Scene “<span id="incoming-name"></span>”</strong> from a link.
+      <div class="actions"><button id="incoming-apply">Apply</button><button id="incoming-save" class="secondary compact">Save to my scenes</button></div>
+    </div>
+    <div id="scene-list" class="scene-list"></div>
+    <p id="scene-empty" class="small">No scenes yet. Set the lamps as you like, then “Save current as scene”. Scenes are kept in this browser; share one to another device with its link.</p>
+    <div id="scene-editor" hidden>
+      <label for="scene-name">Scene name</label>
+      <input id="scene-name" type="text" maxlength="30" autocomplete="off">
+      <div id="scene-lamps" class="scene-lamps"></div>
+      <div class="actions"><button id="scene-save">Save scene</button><button id="scene-cancel" class="secondary compact">Cancel</button></div>
+    </div>
+    <input id="scene-url" class="small" readonly hidden aria-label="Scene link">
+  </section>
+
   <section class="card">
     <div class="section-head"><h2>All lamps, one connection</h2><span id="mesh-badge" class="badge">Not set up</span></div>
     <p class="small">Connect to any lamp; commands reach the others through the mesh. Easiest on the iPhone. Schedules and lamps without a mesh address need their own connection below.</p>
