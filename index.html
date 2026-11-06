@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>Lamp Control</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="protocol.js" defer></script>
+  <script src="transport.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+<main>
+  <header><span class="eyebrow">EGLO / AWOX</span><h1>Lampen</h1></header>
+  <section class="card">
+    <h2>Mesh credentials</h2>
+    <p class="small">Close the AwoX/EGLO app first. Credentials stay in these fields only while the page is open; nothing is saved or uploaded.</p>
+    <label for="mesh-name">Mesh name</label>
+    <input id="mesh-name" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64">
+    <label for="mesh-password">Mesh password</label>
+    <input id="mesh-password" type="password" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64">
+    <p id="status" class="status" role="status" aria-live="polite">Running local crypto self-test…</p>
+  </section>
+
+  <template id="lamp-template">
+    <section class="card lamp">
+      <div class="section-head"><h2 class="lamp-name"></h2><span class="badge">Disconnected</span></div>
+      <div class="actions">
+        <button class="connect" disabled>Connect</button>
+        <button class="connect-any secondary compact" disabled>Pick from full list</button>
+        <button class="disconnect secondary compact" disabled>Disconnect</button>
+      </div>
+      <div class="power-actions"><button class="off" disabled>OFF</button><button class="on" disabled>ON</button></div>
+      <label>Brightness <output class="brightness-out"></output></label>
+      <input class="brightness" type="range" min="2" max="254" value="128" disabled>
+      <label>White temperature <output class="temperature-out"></output></label>
+      <input class="temperature" type="range" min="153" max="454" value="300" disabled>
+      <div class="scale small"><span>warm</span><span>cold</span></div>
+      <label>Colour <output class="color-out"></output></label>
+      <input class="hue" type="range" min="0" max="254" value="0" disabled>
+      <label>Saturation <output class="saturation-out"></output></label>
+      <input class="saturation" type="range" min="0" max="254" value="254" disabled>
+
+      <details class="sub"><summary>Schedules</summary>
+        <p class="small">Stored in the lamp; they run with the phone off. Saving also sets the lamp clock. The lamp cannot report what is stored, so this shows what this browser last saved.</p>
+        <div class="schedules"></div>
+      </details>
+    </section>
+  </template>
+  <template id="schedule-template">
+    <div class="schedule">
+      <div class="section-head"><h3 class="sch-title"></h3><label class="switch"><input type="checkbox" class="sch-enabled"> Active</label></div>
+      <div class="row3">
+        <label>Time <input class="sch-time" type="time" value="07:00"></label>
+        <label>Fade (min) <input class="sch-fade" type="number" min="0" max="63" value="1"></label>
+        <label class="sch-light">Brightness % <input class="sch-brightness" type="number" min="1" max="100" value="100"></label>
+      </div>
+      <label class="sch-light">White <select class="sch-mired"><option value="370">Warm (2700 K)</option><option value="300">Soft (3300 K)</option><option value="250">Neutral (4000 K)</option><option value="153">Cold (6500 K)</option></select></label>
+      <div class="weekdays"></div>
+      <div class="actions"><button class="sch-save" disabled>Save to lamp</button></div>
+      <p class="small sch-saved"></p>
+    </div>
+  </template>
+  <div id="lamps"></div>
+
+  <section class="card">
+    <h2>All connected lamps</h2>
+    <div class="power-actions"><button id="all-off" disabled>OFF</button><button id="all-on" disabled>ON</button></div>
+    <p class="small">Slider positions are not read back from the lamps; they show what was last sent.</p>
+  </section>
+
+  <details class="card"><summary>Log</summary>
+    <div class="actions"><button id="copy" class="secondary compact">Copy log</button></div>
+    <textarea id="log" readonly spellcheck="false" aria-label="Log"></textarea>
+    <p class="small">No credentials, device IDs, auth payloads or keys are logged.</p>
+  </details>
+</main>
+</body>
+</html>

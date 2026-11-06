@@ -1,0 +1,5 @@
+# Captures and decoded traffic contain private Bluetooth data: never commit.
+*.pklg
+*decoded*.txt
+__pycache__/
+.DS_Store
