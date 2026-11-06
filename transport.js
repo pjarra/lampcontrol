@@ -55,7 +55,8 @@
       try { if (device?.gatt?.connected) device.gatt.disconnect(); } catch (_) { /* best effort */ }
       this.changed();
     }
-    async connect(name, password, request = {acceptAllDevices: true}) {
+    // knownDevice: a BluetoothDevice picked earlier (or from getDevices()); reconnects without the picker.
+    async connect(name, password, request = {acceptAllDevices: true}, knownDevice = null) {
       if (this.busy || this.device) throw fail('BUSY', 'Disconnect the current session first.');
       if (!this.bluetooth) throw fail('NO_BLUETOOTH', 'Web Bluetooth is unavailable. Use Chrome (localhost/HTTPS) or Bluefy.');
       this.busy = true; this.changed();
@@ -64,7 +65,7 @@
       try {
         // requestDevice runs directly from the click handler, before any await.
         // Names are identical across lamps; callers may filter by advertisement data instead.
-        const device = await this.bluetooth.requestDevice({...request, optionalServices: [UUID.service]});
+        const device = knownDevice || await this.bluetooth.requestDevice({...request, optionalServices: [UUID.service]});
         this.assertCurrent(generation);
         this.device = device;
         this.disconnectListener = () => {
@@ -72,7 +73,7 @@
           this.log('BLE disconnected; session key cleared.'); this.disconnect();
         };
         device.addEventListener('gattserverdisconnected', this.disconnectListener);
-        this.log('Device selected. Connecting to GATT. Device name/ID omitted from diagnostics.');
+        this.log((knownDevice ? 'Reconnecting to the known lamp.' : 'Device selected. Connecting to GATT.') + ' Device name/ID omitted from diagnostics.');
         if (!device.gatt) throw fail('NO_GATT', 'Selected device has no GATT server.');
         let commandWriter, response;
         // The chip alternates accept/reject (upstream hardware notes): a 0x0E right

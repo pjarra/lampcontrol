@@ -38,6 +38,7 @@
   const SLIDER_KINDS = ['brightness', 'temperature', 'color'];
   function storageGet(key) { try { return JSON.parse(localStorage.getItem(key)); } catch (_) { return null; } }
   function storageSet(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* optional */ } }
+  function storageRemove(key) { try { localStorage.removeItem(key); } catch (_) { /* optional */ } }
   const events = [];
   let bootOK = false;
 
@@ -64,6 +65,31 @@
   function kelvin(mired) { return Math.round(1e6 / mired / 50) * 50; }
   // 0 % = warmest (454 mired), 100 % = coldest (153 mired).
   function whitePercent(mired) { return Math.round((454 - mired) / 3.01); }
+  // Optional, per device: credentials in this origin's localStorage (Bluefy/Chrome profile).
+  const CRED_KEY = 'mesh-credentials';
+  function showCredentialState() {
+    const saved = !!storageGet(CRED_KEY);
+    $('remember').checked = saved; $('forget').hidden = !saved;
+    $('cred-state').textContent = saved ? '· saved on this device' : '';
+  }
+  function loadCredentials() {
+    const saved = storageGet(CRED_KEY);
+    if (saved && typeof saved.name === 'string' && typeof saved.password === 'string') {
+      $('mesh-name').value = saved.name; $('mesh-password').value = saved.password;
+      $('credentials').open = false;
+    }
+    showCredentialState();
+  }
+  function rememberCredentials() {
+    if ($('remember').checked) storageSet(CRED_KEY, {name: $('mesh-name').value, password: $('mesh-password').value});
+    else storageRemove(CRED_KEY);
+    showCredentialState();
+  }
+  $('remember').addEventListener('change', () => { if (!$('remember').checked) rememberCredentials(); });
+  $('forget').addEventListener('click', () => {
+    storageRemove(CRED_KEY); $('mesh-name').value = $('mesh-password').value = '';
+    $('credentials').open = true; showCredentialState();
+  });
   function readCredentials() {
     let name;
     try {
@@ -98,32 +124,39 @@
     $('lamps').append(el);
     lamp.el = el;
     lamp.pending = new Map(); // latest unsent value per control
+    // lamp.device: the BluetoothDevice picked once (or restored via getDevices()). With it,
+    // tapping a control connects and logs in automatically; no picker needed.
     lamp.sync = () => {
-      const s = lamp.session, idle = !s.busy && !s.device;
+      const s = lamp.session, idle = !s.busy && !s.device, usable = bootOK && (s.ready || !!lamp.device);
       q('connect').disabled = q('connect-any').disabled = !bootOK || !idle;
+      q('connect').textContent = lamp.device ? 'Pick again' : 'Connect';
       q('disconnect').disabled = !(s.busy || s.device);
-      for (const c of ['on', 'off', 'brightness', 'temperature', 'hue', 'saturation']) q(c).disabled = !s.ready;
-      for (const sch of lamp.schedules || []) sch.save.disabled = !s.ready;
-      q('badge').textContent = s.busy && !s.ready ? 'Connecting…' : s.ready ? 'Connected' : 'Disconnected';
-      if (!s.device) lamp.pending.clear();
+      for (const c of ['on', 'off', 'brightness', 'temperature', 'hue', 'saturation']) q(c).disabled = !usable;
+      for (const sch of lamp.schedules || []) sch.save.disabled = !usable;
+      q('badge').textContent = s.busy && !s.ready ? 'Connecting…' : s.ready ? 'Connected' : lamp.device ? 'Ready' : 'Not set up';
     };
     lamp.session = new globalThis.AwoxTransport.MeshSession({
       log: text => log(lamp.name + ': ' + text), changed: () => { lamp.sync(); syncAll(); pump(lamp); }
     });
-    const connect = request => {
+    const connect = (request, known = null) => {
       const creds = readCredentials();
-      if (!creds) return;
-      $('status').textContent = 'Choose ' + lamp.name + ' in the Bluetooth picker…';
-      lamp.session.connect(creds[0], creds[1], request)
+      if (!creds) { lamp.pending.clear(); $('credentials').open = true; return; }
+      $('status').textContent = known ? 'Connecting to ' + lamp.name + '…' : 'Choose ' + lamp.name + ' in the Bluetooth picker…';
+      lamp.session.connect(creds[0], creds[1], request, known)
         .then(() => {
+          lamp.device = lamp.session.device;
+          storageSet('device:' + lamp.id, lamp.device.id);
+          rememberCredentials();
+          lamp.sync();
           $('status').textContent = lamp.name + ' connected.';
           // Schedules need the lamp clock; it stores a fixed UTC offset, so refresh on every connect (DST).
           lamp.lastActivity = Date.now();
           queue(lamp, 'timezone', null);
           queue(lamp, 'clock', null);
         })
-        .catch(error => reportError(lamp, error));
+        .catch(error => { lamp.pending.clear(); reportError(lamp, error); });
     };
+    lamp.reconnect = () => { if (lamp.device && !lamp.session.busy && !lamp.session.device) connect(null, lamp.device); };
     q('connect').addEventListener('click', () => connect(pickerFilter(lamp.adPrefix)));
     q('connect-any').addEventListener('click', () => connect({acceptAllDevices: true}));
     q('disconnect').addEventListener('click', () => { lamp.session.disconnect(); log(lamp.name + ': disconnected by user.'); });
@@ -245,7 +278,11 @@
   };
   // Coalesce: slider drags replace the pending value, so only the newest is sent.
   function queue(lamp, kind, value) {
-    if (!lamp.session.ready) return;
+    if (!lamp.session.ready) {
+      // Known lamp: keep the command and connect in the background; it is sent once logged in.
+      if (!lamp.device || !bootOK) return;
+      if (!lamp.session.busy) lamp.reconnect();
+    }
     // Power supersedes pending slider moves; the latest colour mode wins.
     if (kind === 'power') for (const k of SLIDER_KINDS) lamp.pending.delete(k);
     if (kind === 'temperature') lamp.pending.delete('color');
@@ -267,7 +304,7 @@
   }
 
   function syncAll() {
-    const any = LAMPS.some(l => l.session?.ready);
+    const any = bootOK && LAMPS.some(l => l.session?.ready || l.device);
     $('all-on').disabled = $('all-off').disabled = !any;
     $('mesh-name').disabled = $('mesh-password').disabled = LAMPS.some(l => l.session?.busy && !l.session.ready);
   }
@@ -279,6 +316,8 @@
     catch (_) { $('log').focus(); $('log').select(); $('copy').textContent = 'Select & copy'; }
     setTimeout(() => { $('copy').textContent = 'Copy log'; }, 2500);
   });
+  // Restored from the back/forward cache after pagehide cleared the fields.
+  addEventListener('pageshow', event => { if (event.persisted) loadCredentials(); });
   addEventListener('pagehide', () => {
     for (const lamp of LAMPS) lamp.session.disconnect();
     $('mesh-name').value = $('mesh-password').value = '';
@@ -333,6 +372,7 @@
       const response = await fetch('lamps.json?t=' + Date.now(), {cache: 'no-store'});
       LAMPS = parseLamps(await response.json());
       LAMPS.forEach(setupLamp);
+      loadCredentials();
     } catch (_) {
       log('Could not load lamps.json.'); $('status').textContent = 'Could not load the lamp list (lamps.json).';
       return;
@@ -344,6 +384,18 @@
       $('status').textContent = !bootOK ? 'This browser has no Web Bluetooth. Use Chrome or Bluefy.' :
         LAMPS.length ? 'Ready. Enter the mesh credentials, then connect a lamp.' : 'No lamps in lamps.json yet. Run tools/scan-lamps.swift on the Mac.';
     } catch (_) { log('Crypto self-test FAILED. Controls disabled.'); $('status').textContent = 'Crypto self-test failed.'; }
+    // Where supported (not in desktop Chrome by default), getDevices() returns lamps picked
+    // in earlier visits, so even a reloaded page needs no picker.
+    if (bootOK && navigator.bluetooth.getDevices) {
+      try {
+        const devices = await navigator.bluetooth.getDevices();
+        for (const lamp of LAMPS) {
+          const id = storageGet('device:' + lamp.id);
+          lamp.device = devices.find(d => id && d.id === id) || null;
+          if (lamp.device) log(lamp.name + ': remembered from an earlier visit.');
+        }
+      } catch (_) { log('getDevices() failed; lamps need the picker once per visit.'); }
+    } else if (bootOK) log('This browser has no getDevices(); pick each lamp once per visit.');
     for (const lamp of LAMPS) lamp.sync();
     syncAll();
   })();

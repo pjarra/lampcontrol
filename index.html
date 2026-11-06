@@ -17,15 +17,19 @@
 <main>
   <div id="update" class="notice" hidden><strong>A newer version is available.</strong> <button id="reload" class="secondary compact">Reload</button></div>
   <header><span class="eyebrow">EGLO / AWOX</span><h1>Lampen</h1></header>
-  <section class="card">
-    <h2>Mesh credentials</h2>
-    <p class="small">Close the AwoX/EGLO app first. Credentials stay in these fields only while the page is open; nothing is saved or uploaded.</p>
+  <details id="credentials" class="card" open>
+    <summary><strong>Mesh credentials</strong> <span id="cred-state" class="small"></span></summary>
+    <p class="small">Close the AwoX/EGLO app first. Nothing is uploaded. With “Remember”, the credentials are kept in this browser on this device only.</p>
     <label for="mesh-name">Mesh name</label>
     <input id="mesh-name" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64">
     <label for="mesh-password">Mesh password</label>
     <input id="mesh-password" type="password" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64">
-    <p id="status" class="status" role="status" aria-live="polite">Running local crypto self-test…</p>
-  </section>
+    <div class="actions">
+      <label class="switch"><input id="remember" type="checkbox"> Remember on this device</label>
+      <button id="forget" class="secondary compact" hidden>Forget saved credentials</button>
+    </div>
+  </details>
+  <p id="status" class="status" role="status" aria-live="polite">Running local crypto self-test…</p>
 
   <template id="lamp-template">
     <section class="card lamp">
