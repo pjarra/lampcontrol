@@ -119,7 +119,10 @@
       InvalidStateError: 'Bluetooth is no longer connected. Reconnect.',
       AbortError: 'Bluetooth operation was cancelled.'
     };
-    const text = lamp.name + ': ' + (error.safeCode ? error.safeCode + ': ' + error.message : known[error.name] || 'Operation failed. Reconnect.');
+    // error.name is a standard DOMException/Error type and safe to show; error.message may not be.
+    const kind = typeof error?.name === 'string' ? error.name.slice(0, 40) : typeof error;
+    const text = lamp.name + ': ' + (error?.safeCode ? error.safeCode + ': ' + error.message :
+      (known[kind] || 'Operation failed. Reconnect.') + ' [' + kind + ']');
     log(text); $('status').textContent = text; syncAll();
   }
 
