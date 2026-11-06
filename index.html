@@ -7,6 +7,7 @@
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Lamp Control</title>
+  <meta name="build" content="__BUILD__">
   <link rel="stylesheet" href="style.css">
   <script src="protocol.js" defer></script>
   <script src="transport.js" defer></script>
@@ -14,6 +15,7 @@
 </head>
 <body>
 <main>
+  <div id="update" class="notice" hidden><strong>A newer version is available.</strong> <button id="reload" class="secondary compact">Reload</button></div>
   <header><span class="eyebrow">EGLO / AWOX</span><h1>Lampen</h1></header>
   <section class="card">
     <h2>Mesh credentials</h2>
@@ -82,6 +84,7 @@
     <textarea id="log" readonly spellcheck="false" aria-label="Log"></textarea>
     <p class="small">No credentials, device IDs, auth payloads or keys are logged.</p>
   </details>
+  <footer class="small">Version <span id="build"></span></footer>
 </main>
 </body>
 </html>

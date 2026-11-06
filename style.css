@@ -19,3 +19,6 @@ select{margin-top:6px}
 .weekdays{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:14px}
 .weekdays label{display:flex;gap:4px;align-items:center;margin:0;font-weight:500}
 .sch-offrow input[type=time]{width:auto;padding:6px 8px}
+footer{margin:24px 0 8px;color:#5b7168;text-align:center}
+#update{display:flex;align-items:center;justify-content:space-between;gap:12px}
+#update[hidden]{display:none}

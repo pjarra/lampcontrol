@@ -1,0 +1,43 @@
+# Publishes the page to GitHub Pages with a version stamp (commit + UTC time):
+# shown in the footer, appended to asset URLs (so browsers never mix versions),
+# and written to version.json (the page uses it to offer a reload).
+name: Publish page
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp version
+        run: |
+          version="${GITHUB_SHA::7} · $(date -u '+%Y-%m-%d %H:%M') UTC"
+          short="${GITHUB_SHA::7}"
+          mkdir _site
+          cp index.html app.js protocol.js transport.js style.css lamps.json LICENSE.txt _site/
+          sed -i "s/__BUILD__/${version}/g" _site/index.html
+          sed -i -E "s/(src|href)=\"(app|protocol|transport)\.js\"/\1=\"\2.js?v=${short}\"/g; s/href=\"style\.css\"/href=\"style.css?v=${short}\"/" _site/index.html
+          printf '{"version": "%s"}\n' "${version}" > _site/version.json
+          grep -q "${short}" _site/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - id: deployment
+        uses: actions/deploy-pages@v4

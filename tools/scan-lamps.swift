@@ -5,6 +5,7 @@
 // Passive scan only: no connection, no writes to any lamp. Lamps advertise only
 // about every 25 s, so keep the default duration. Known lamps keep their names;
 // for new ones you are asked for a name (switch on only the new lamp if unsure).
+// Entering an existing name replaces that lamp's ID, e.g. after re-provisioning.
 import CoreBluetooth
 import Foundation
 
@@ -90,9 +91,17 @@ for s in scanner.seen.values.sorted(by: { $0.rssi > $1.rssi }) {
     } else {
         print("NEW    id \(s.id), address \(addr), RSSI \(s.rssi) (closer = higher)")
         guard s.address != nil else { print("       skipped: rerun the scan to also catch its mesh address"); continue }
-        print("       Name for this lamp (empty = skip): ", terminator: "")
+        print("       Name for this lamp (empty = skip; an existing name replaces that lamp's entry): ", terminator: "")
         let name = (readLine() ?? "").trimmingCharacters(in: .whitespaces)
-        if !name.isEmpty { lamps.append(Lamp(name: name, id: s.id, meshAddress: hex4(s.address!))); changed = true }
+        if name.isEmpty { continue }
+        // Re-provisioning (e.g. by the AwoX app) can give a lamp a new advertisement ID.
+        if let i = lamps.firstIndex(where: { $0.name.lowercased() == name.lowercased() }) {
+            print("       replacing \(lamps[i].name): id \(lamps[i].id) -> \(s.id)")
+            lamps[i].id = s.id; lamps[i].meshAddress = hex4(s.address!)
+        } else {
+            lamps.append(Lamp(name: name, id: s.id, meshAddress: hex4(s.address!)))
+        }
+        changed = true
     }
 }
 for l in lamps where scanner.seen[l.id] == nil { print("absent \(l.name) (off, connected elsewhere, or not advertising during the scan)") }

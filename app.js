@@ -310,6 +310,23 @@
     }
   }, 15000);
 
+  // Version stamp: written into the meta tag by the publish workflow; version.json
+  // holds the newest published one, so a stale tab can offer a reload.
+  const BUILD = document.querySelector('meta[name="build"]').content;
+  const published = BUILD !== '__BUILD__';
+  $('build').textContent = published ? BUILD : 'local development';
+  async function checkForUpdate() {
+    if (!published) return;
+    try {
+      const response = await fetch('version.json?t=' + Date.now(), {cache: 'no-store'});
+      const latest = (await response.json()).version;
+      $('update').hidden = !latest || latest === BUILD;
+    } catch (_) { /* offline or not yet deployed: keep quiet */ }
+  }
+  $('reload').addEventListener('click', () => location.reload());
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) checkForUpdate(); });
+  checkForUpdate();
+
   (async () => {
     try {
       // Query string bypasses the CDN cache (max-age 600), so a freshly pushed list shows at once.
