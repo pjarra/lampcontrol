@@ -260,7 +260,8 @@
 
   (async () => {
     try {
-      const response = await fetch('lamps.json', {cache: 'no-cache'});
+      // Query string bypasses the CDN cache (max-age 600), so a freshly pushed list shows at once.
+      const response = await fetch('lamps.json?t=' + Date.now(), {cache: 'no-store'});
       LAMPS = parseLamps(await response.json());
       LAMPS.forEach(setupLamp);
     } catch (_) {
