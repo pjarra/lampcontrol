@@ -4,10 +4,11 @@
  */
 (function (root) {
   'use strict';
-  // Mesh addresses read passively from each lamp's scan-response manufacturer data,
-  // plus 0x0000 (classic Telink: the directly connected lamp) and 0xFFFF (broadcast).
-  const TARGETS = Object.freeze({standleuchte: 0xC7B4, schlafzimmerschrank: 0xFFFE, connected: 0x0000, all: 0xFFFF});
-  const ALLOWED = new Set(Object.values(TARGETS));
+  // 0x0000 = the directly connected lamp (verified on all lamps), 0xFFFF = broadcast.
+  // Any other lamp address may be targeted through the mesh, except group addresses
+  // (0x80xx, which need wire flag 0x01) and 0xFFFE (seen on an unprovisioned lamp).
+  const TARGETS = Object.freeze({connected: 0x0000, all: 0xFFFF});
+  const targetOK = t => Number.isInteger(t) && t >= 0 && t <= 0xFFFF && (t >>> 8) !== 0x80 && t !== 0xFFFE;
   const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
   function pad16(bytes) {
     if (!(bytes instanceof Uint8Array) || bytes.length > 16) throw new Error('Expected at most 16 bytes');
@@ -84,7 +85,7 @@
     return value;
   }
   function commandBlock(target, opcode, data) {
-    if (!ALLOWED.has(target)) throw new Error('Address not in the allowed lamp list');
+    if (!targetOK(target)) throw new Error('Address not allowed');
     // [CRC][length][destination BE][type=1][opcode hi lo][data][zero pad]
     const fields = Uint8Array.of(data.length + 5, target >>> 8, target & 255, 1, ...opcode, ...data);
     if (fields.length > 15) throw new Error('Command too long for one block');
@@ -246,7 +247,7 @@
     key.fill(0);
     return true;
   }
-  const api = {TARGETS, RANGE, ROUTINE, PARTS, hex, credentials, attEncrypt, crc8, pairPacket, sessionKey, powerBlock, brightnessBlock, temperatureBlock,
+  const api = {TARGETS, targetOK, RANGE, ROUTINE, PARTS, hex, credentials, attEncrypt, crc8, pairPacket, sessionKey, powerBlock, brightnessBlock, temperatureBlock,
     colorBlock, candleBlock, queryBlock, clockBlock, timezoneBlock, scheduleBlock, timezonePacket,
     powerPacket, brightnessPacket, temperaturePacket, colorPacket, candlePacket, clockPacket, schedulePacket, selfTest};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

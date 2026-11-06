@@ -2,10 +2,14 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const P = globalThis.AwoxProtocol;
-  // Each lamp is controlled over its own direct connection with destination
-  // 0x0000 (the connected lamp). Schlafzimmerschrank's advertised address 0xFFFE
-  // is unusable and it does not relay mesh traffic, so the mesh is not relied on.
+  // Two routes to a lamp: its own direct connection (destination 0x0000 = the
+  // connected lamp; needed for schedules and the clock, whose frames carry no
+  // destination), or the shared mesh connection to any lamp, addressed by the
+  // lamp's mesh address. The mesh route needs no per-lamp picker, which matters
+  // in Bluefy: it cannot filter by advertisement data, and all lamps share a name.
   const CONNECTED = P.TARGETS.connected;
+  const MESH_KINDS = new Set(['power', 'brightness', 'temperature', 'color']);
+  const MESH = {name: 'Mesh', device: null, pending: new Map()};
   // Lamps come from lamps.json (written by tools/scan-lamps.swift). All lamps
   // advertise the same name, so the picker filters on manufacturer data
   // (company 0x0160): the first six data bytes are per-lamp and constant, and
@@ -18,7 +22,9 @@
       if (!/^[0-9a-f]{12}$/.test(id) || !Number.isInteger(address) || address < 0 || address > 0xFFFF) throw new Error('bad lamp entry');
       return {
         id, name: String(entry.name || 'Lamp ' + id).slice(0, 40),
-        adPrefix: id.match(/../g).map(h => parseInt(h, 16)), meshAddress: address
+        adPrefix: id.match(/../g).map(h => parseInt(h, 16)), meshAddress: address,
+        // 0x0000 / 0xFFFE: lamp without a usable mesh address (not properly provisioned).
+        meshOK: address !== 0 && P.targetOK(address)
       };
     });
   }
@@ -136,16 +142,19 @@
     // lamp.device: the BluetoothDevice picked once (or restored via getDevices()). With it,
     // tapping a control connects and logs in automatically; no picker needed.
     lamp.sync = () => {
-      const s = lamp.session, idle = !s.busy && !s.device, usable = bootOK && (s.ready || !!lamp.device);
+      const s = lamp.session, idle = !s.busy && !s.device, direct = bootOK && (s.ready || !!lamp.device);
+      const viaMesh = bootOK && lamp.meshOK && !!(MESH.session?.ready || MESH.device);
       q('connect').disabled = q('connect-any').disabled = !bootOK || !idle;
       q('connect').textContent = lamp.device ? 'Pick again' : 'Connect';
       q('disconnect').disabled = !(s.busy || s.device);
-      for (const c of ['on', 'off', 'brightness', 'temperature', 'hue', 'saturation']) q(c).disabled = !usable;
-      for (const sch of lamp.schedules || []) sch.save.disabled = !usable;
-      q('badge').textContent = s.busy && !s.ready ? 'Connecting…' : s.ready ? 'Connected' : lamp.device ? 'Ready' : 'Not set up';
+      for (const c of ['on', 'off', 'brightness', 'temperature', 'hue', 'saturation']) q(c).disabled = !(direct || viaMesh);
+      for (const sch of lamp.schedules || []) sch.save.disabled = !direct;
+      q('badge').textContent = s.busy && !s.ready ? 'Connecting…' : s.ready ? 'Connected' :
+        MESH.session?.ready && lamp.meshOK ? 'Via mesh' : lamp.device || viaMesh ? 'Ready' :
+        lamp.meshOK ? 'Not set up' : 'Needs own connection';
     };
     lamp.session = new globalThis.AwoxTransport.MeshSession({
-      log: text => log(lamp.name + ': ' + text), changed: () => { lamp.sync(); syncAll(); pump(lamp); }
+      log: text => log(lamp.name + ': ' + text), changed: () => { lamp.sync(); syncAll(); pumpAll(); }
     });
     const connect = (request, known = null) => {
       const creds = readCredentials();
@@ -267,10 +276,10 @@
   }
 
   const COMMANDS = {
-    power: on => ['power ' + (on ? 'ON' : 'OFF'), key => P.powerPacket(key, on, CONNECTED)],
-    brightness: v => ['brightness ' + v, key => P.brightnessPacket(key, v, CONNECTED)],
-    temperature: m => ['temperature ' + m + ' mired', key => P.temperaturePacket(key, m, CONNECTED)],
-    color: ([h, s]) => ['colour hue ' + h + ' sat ' + s, key => P.colorPacket(key, h, s, CONNECTED)],
+    power: (on, dest) => ['power ' + (on ? 'ON' : 'OFF'), key => P.powerPacket(key, on, dest)],
+    brightness: (v, dest) => ['brightness ' + v, key => P.brightnessPacket(key, v, dest)],
+    temperature: (m, dest) => ['temperature ' + m + ' mired', key => P.temperaturePacket(key, m, dest)],
+    color: ([h, s], dest) => ['colour hue ' + h + ' sat ' + s, key => P.colorPacket(key, h, s, dest)],
     timezone: () => {
       const rule = posixTZ();
       return rule ? ['time zone ' + rule, key => P.timezonePacket(key, Math.floor(Date.now() / 1000), rule)] : null;
@@ -286,11 +295,23 @@
       s.offPart ? 100 : undefined] // like the app: off-part right after its on-part
   };
   // Coalesce: slider drags replace the pending value, so only the newest is sent.
+  // Route for a lamp's next command: own connection, else the mesh (control commands only).
+  function route(lamp, kind) {
+    if (lamp.session.ready) return {session: lamp.session, dest: CONNECTED, label: lamp.name};
+    if (MESH_KINDS.has(kind.split(':')[0]) && lamp.meshOK && MESH.session.ready) {
+      return {session: MESH.session, dest: lamp.meshAddress, label: lamp.name + ' via mesh'};
+    }
+    return null;
+  }
   function queue(lamp, kind, value) {
-    if (!lamp.session.ready) {
-      // Known lamp: keep the command and connect in the background; it is sent once logged in.
-      if (!lamp.device || !bootOK) return;
-      if (!lamp.session.busy) lamp.reconnect();
+    if (!bootOK) return;
+    if (!route(lamp, kind)) {
+      // Not connected: keep the command and connect in the background (no picker needed
+      // for a known device); it is sent once logged in.
+      const meshCapable = MESH_KINDS.has(kind.split(':')[0]) && lamp.meshOK;
+      if (lamp.device) { if (!lamp.session.busy) lamp.reconnect(); }
+      else if (meshCapable && MESH.device) { if (!MESH.session.busy) MESH.reconnect(); }
+      else if (!(meshCapable && MESH.session.busy) && !lamp.session.busy) return;
     }
     // Power supersedes pending slider moves; the latest colour mode wins.
     if (kind === 'power') for (const k of SLIDER_KINDS) lamp.pending.delete(k);
@@ -301,22 +322,61 @@
     pump(lamp);
   }
   async function pump(lamp) {
-    const s = lamp.session;
-    if (s.busy || !s.ready || !lamp.pending.size) return;
+    if (!lamp.pending.size) return;
     const [kind, value] = lamp.pending.entries().next().value;
+    const r = route(lamp, kind);
+    if (!r || r.session.busy) return; // sent when a connection becomes ready or free
     lamp.pending.delete(kind);
-    const command = COMMANDS[kind.split(':')[0]](value);
+    const command = COMMANDS[kind.split(':')[0]](value, r.dest);
     if (!command) { pump(lamp); return; } // e.g. no time zone rule for this zone
     const [description, build, gap] = command;
-    lamp.lastActivity = Date.now();
-    try { await s.send(description, build, gap); } catch (error) { reportError(lamp, error); }
+    lamp.lastActivity = MESH.lastActivity = Date.now();
+    try { await r.session.send(description + (r.dest === CONNECTED ? '' : ' to ' + r.label), build, gap); }
+    catch (error) { reportError(r.session === MESH.session ? MESH : lamp, error); }
   }
+  function pumpAll() { for (const lamp of LAMPS) pump(lamp); }
 
   function syncAll() {
-    const any = bootOK && LAMPS.some(l => l.session?.ready || l.device);
+    const meshUsable = !!(MESH.session?.ready || MESH.device);
+    const any = bootOK && LAMPS.some(l => l.session?.ready || l.device || (l.meshOK && meshUsable));
     $('all-on').disabled = $('all-off').disabled = !any;
-    $('mesh-name').disabled = $('mesh-password').disabled = LAMPS.some(l => l.session?.busy && !l.session.ready);
+    $('mesh-name').disabled = $('mesh-password').disabled = [...LAMPS, MESH].some(l => l.session?.busy && !l.session.ready);
+    if (MESH.session) {
+      const s = MESH.session;
+      $('mesh-connect').disabled = $('mesh-any').disabled = !bootOK || s.busy || !!s.device;
+      $('mesh-connect').textContent = MESH.device ? 'Pick again' : 'Connect';
+      $('mesh-disconnect').disabled = !(s.busy || s.device);
+      $('mesh-badge').textContent = s.busy && !s.ready ? 'Connecting…' : s.ready ? 'Connected' : MESH.device ? 'Ready' : 'Not set up';
+    }
   }
+  // Mesh connection: any lamp of the mesh. The picker filters by name, which is the
+  // mesh name on these lamps (a factory-reset lamp advertises "unpaired" instead).
+  MESH.session = new globalThis.AwoxTransport.MeshSession({
+    log: text => log('Mesh: ' + text), changed: () => { for (const l of LAMPS) l.sync(); syncAll(); pumpAll(); }
+  });
+  function connectMesh(request, known = null) {
+    const creds = readCredentials();
+    if (!creds) { for (const l of LAMPS) l.pending.clear(); $('credentials').open = true; return; }
+    $('status').textContent = known ? 'Connecting to the mesh…' : 'Choose any lamp in the Bluetooth picker…';
+    MESH.session.connect(creds[0], creds[1], request, known)
+      .then(() => {
+        MESH.device = MESH.session.device; MESH.lastActivity = Date.now();
+        storageSet('device:mesh', MESH.device.id);
+        rememberCredentials();
+        $('status').textContent = 'Mesh connected: lamps with a mesh address are controlled through it.';
+        syncAll();
+      })
+      .catch(error => { for (const l of LAMPS) if (!l.session.ready) l.pending.clear(); reportError(MESH, error); });
+  }
+  MESH.reconnect = () => { if (MESH.device && !MESH.session.busy && !MESH.session.device) connectMesh(null, MESH.device); };
+  $('mesh-connect').addEventListener('click', () => {
+    // Advertised name = mesh name, but iOS/macOS often show the cached GATT name
+    // (EGLO_ZM_RGB_TW) instead, so accept either; any lamp of the mesh will do.
+    const name = $('mesh-name').value;
+    connectMesh({filters: [...(name ? [{name}] : []), {namePrefix: 'EGLO'}]});
+  });
+  $('mesh-any').addEventListener('click', () => connectMesh({acceptAllDevices: true}));
+  $('mesh-disconnect').addEventListener('click', () => { MESH.session.disconnect(); log('Mesh: disconnected by user.'); });
   for (const [id, on] of [['all-on', true], ['all-off', false]]) {
     $(id).addEventListener('click', () => { for (const lamp of LAMPS) queue(lamp, 'power', on); });
   }
@@ -328,7 +388,7 @@
   // Restored from the back/forward cache after pagehide cleared the fields.
   addEventListener('pageshow', event => { if (event.persisted) loadCredentials(); });
   addEventListener('pagehide', () => {
-    for (const lamp of LAMPS) lamp.session.disconnect();
+    for (const lamp of [...LAMPS, MESH]) lamp.session.disconnect();
     $('mesh-name').value = $('mesh-password').value = '';
   });
   // A connection left open (e.g. the Mac sleeping with the tab connected) can
@@ -336,12 +396,12 @@
   // Note: no Bluetooth write may run here; just close the links.
   function releaseAll(reason) {
     let released = false;
-    for (const lamp of LAMPS) {
+    for (const lamp of [...LAMPS, MESH]) {
       if (lamp.session.device) { lamp.session.disconnect(); log(lamp.name + ': disconnected (' + reason + ').'); released = true; }
     }
     if (released) $('status').textContent = 'Disconnected (' + reason + '). Connect again when needed.';
   }
-  const connecting = () => LAMPS.some(l => l.session.busy && !l.session.ready);
+  const connecting = () => [...LAMPS, MESH].some(l => l.session.busy && !l.session.ready);
   document.addEventListener('visibilitychange', () => {
     // The Bluetooth picker can obscure the page on iOS, so never cancel a connect in progress.
     if (document.hidden && !connecting()) releaseAll('page hidden');
@@ -349,7 +409,7 @@
   addEventListener('freeze', () => releaseAll('page frozen'));
   const IDLE_MS = 5 * 60 * 1000;
   setInterval(() => {
-    for (const lamp of LAMPS) {
+    for (const lamp of [...LAMPS, MESH]) {
       const s = lamp.session;
       if (s.ready && !s.busy && !lamp.pending.size && Date.now() - (lamp.lastActivity || 0) > IDLE_MS) {
         s.disconnect(); log(lamp.name + ': disconnected after 5 min idle.');
@@ -403,9 +463,13 @@
           lamp.device = devices.find(d => id && d.id === id) || null;
           if (lamp.device) log(lamp.name + ': remembered from an earlier visit.');
         }
+        const meshId = storageGet('device:mesh');
+        MESH.device = devices.find(d => meshId && d.id === meshId) || null;
+        if (MESH.device) log('Mesh: remembered from an earlier visit.');
       } catch (_) { log('getDevices() failed; lamps need the picker once per visit.'); }
     } else if (bootOK) log('This browser has no getDevices(); pick each lamp once per visit.');
     for (const lamp of LAMPS) lamp.sync();
     syncAll();
   })();
+  syncAll();
 })();
