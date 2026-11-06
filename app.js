@@ -48,6 +48,8 @@
     return {filters: [{manufacturerData: [{companyIdentifier: 0x0160, dataPrefix: Uint8Array.from(prefix)}]}]};
   }
   function kelvin(mired) { return Math.round(1e6 / mired / 50) * 50; }
+  // 0 % = warmest (454 mired), 100 % = coldest (153 mired).
+  function whitePercent(mired) { return Math.round((454 - mired) / 3.01); }
   function readCredentials() {
     let name;
     try {
@@ -146,13 +148,21 @@
     const saved = storageGet(storeKey);
     const v = {enabled: false, weekdays: 0x7F, ...def.defaults, ...(saved || {})};
     q('sch-enabled').checked = !!v.enabled; q('sch-time').value = v.time; q('sch-fade').value = v.fade;
-    if (def.on) { q('sch-brightness').value = v.brightness; q('sch-mired').value = String(v.mired); }
+    // White slider runs warm → cold like the live one: mired = 607 - position; 0 % = warmest.
+    const showWhite = () => {
+      const position = Number(q('sch-mired').value);
+      q('sch-mired-out').textContent = whitePercent(607 - position) + ' % · ' + kelvin(607 - position) + ' K';
+    };
+    if (def.on) {
+      q('sch-brightness').value = v.brightness; q('sch-mired').value = String(607 - v.mired);
+      q('sch-mired').addEventListener('input', showWhite); showWhite();
+    }
     for (const d of days) d.checked = !!(v.weekdays & (1 << d.dataset.bit));
     const showSaved = s => {
       if (!s) { q('sch-saved').textContent = 'Not saved from this browser yet.'; return; }
       const dayList = WEEKDAYS.filter(([, bit]) => s.weekdays & (1 << bit)).map(([label]) => label).join(' ');
       q('sch-saved').textContent = (s.enabled ? 'Active: ' + s.time + ' · ' + (s.weekdays === 0x7F ? 'daily' : dayList) +
-        (def.on ? ' · ' + s.brightness + ' %' : '') + ' · ' + s.fade + ' min fade' : 'Saved as inactive') + ' · sent ' + new Date(s.sentAt).toLocaleString();
+        (def.on ? ' · ' + s.brightness + ' % brightness · white ' + whitePercent(s.mired) + ' %' : '') + ' · ' + s.fade + ' min fade' : 'Saved as inactive') + ' · sent ' + new Date(s.sentAt).toLocaleString();
     };
     showSaved(saved);
     const save = q('sch-save');
@@ -167,7 +177,7 @@
       const schedule = {address: lamp.scheduleAddress, routine: def.routine, enabled: record.enabled, hour, minute, weekdays, fade, on: def.on};
       if (def.on) {
         record.brightness = Math.min(100, Math.max(1, Math.round(Number(q('sch-brightness').value) || 100)));
-        record.mired = Number(q('sch-mired').value);
+        record.mired = 607 - Number(q('sch-mired').value);
         Object.assign(schedule, {brightness: record.brightness, mired: record.mired});
       } else schedule.keepLight = true;
       queue(lamp, 'clock', null);
