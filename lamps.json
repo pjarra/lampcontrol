@@ -3,6 +3,6 @@
   "lamps": [
     {"name": "Standleuchte", "id": "9620b155bc38", "meshAddress": "0xC7B4"},
     {"name": "Schlafzimmerschrank", "id": "9620d54a6538", "meshAddress": "0x0000"},
-    {"name": "Kamin", "id": "96203f0f6338", "meshAddress": "0x88F5"}
+    {"name": "Kamin", "id": "96203f0f6338", "meshAddress": "0x0000"}
   ]
 }
