@@ -48,8 +48,14 @@
     $('log').value = events.join('\n');
     $('log').scrollTop = $('log').scrollHeight;
   }
+  // Chrome matches dataPrefix against the data after the company ID. Some browsers (Bluefy on
+  // iOS, where CoreBluetooth reports the company bytes as part of the data) may not; the extra
+  // variants cover that and a byte-swapped company ID. Filters are OR-ed, so in Chrome only
+  // the first can match.
   function pickerFilter(prefix) {
-    return {filters: [{manufacturerData: [{companyIdentifier: 0x0160, dataPrefix: Uint8Array.from(prefix)}]}]};
+    const variants = [[0x0160, prefix], [0x0160, [0x60, 0x01, ...prefix]], [0x6001, prefix], [0x6001, [0x60, 0x01, ...prefix]]];
+    return {filters: variants.map(([companyIdentifier, bytes]) =>
+      ({manufacturerData: [{companyIdentifier, dataPrefix: Uint8Array.from(bytes)}]}))};
   }
   // POSIX TZ rule for the lamp, like the AwoX app sends (e.g. CET-1CEST,M3.5.0/2,M10.5.0/3).
   // Only EU-style zones are derived; elsewhere null, and only the clock offset is sent.
