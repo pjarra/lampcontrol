@@ -18,21 +18,24 @@
       if (!/^[0-9a-f]{12}$/.test(id) || !Number.isInteger(address) || address < 0 || address > 0xFFFF) throw new Error('bad lamp entry');
       return {
         id, name: String(entry.name || 'Lamp ' + id).slice(0, 40),
-        adPrefix: id.match(/../g).map(h => parseInt(h, 16)),
-        // 0xFFFE/0xFFFF (and 0) are unusable inside schedules; 0x0000 works there (verified).
-        scheduleAddress: address >= 0xFFFE ? 0x0000 : address
+        adPrefix: id.match(/../g).map(h => parseInt(h, 16)), meshAddress: address
       };
     });
   }
   const SCHEDULES = [
-    {id: 'wake', title: 'Wake-up light', routine: P.ROUTINE.dawn, on: true, defaults: {time: '07:00', fade: 30, brightness: 100, mired: 250}},
-    {id: 'evening', title: 'Evening: warm & dim', routine: P.ROUTINE.program, on: true, defaults: {time: '19:00', fade: 5, brightness: 30, mired: 370}},
+    {id: 'wake', title: 'Wake-up light', routine: P.ROUTINE.dawn, offRoutine: P.ROUTINE.dawnOff, on: true,
+      defaults: {time: '07:00', fade: 30, brightness: 100, mired: 250, offEnabled: false, offTime: '08:30'}},
+    // Evening used program (3) before the capture showed paired routines; it now
+    // uses nightlight (5) + off-part (6), and each save disables program (3).
+    {id: 'evening', title: 'Evening: warm & dim', routine: P.ROUTINE.nightlight, offRoutine: P.ROUTINE.nightlightOff, on: true,
+      replaces: P.ROUTINE.program, defaults: {time: '19:00', fade: 5, brightness: 30, mired: 370, offEnabled: false, offTime: '23:00'}},
     {id: 'off', title: 'Off', routine: P.ROUTINE.timer, on: false, defaults: {time: '23:00', fade: 1}}
   ];
+  // The AwoX app writes 0x0000 as the schedule address for every lamp (capture).
+  const SCHEDULE_ADDRESS = 0x0000;
   // Display order Monday first; values are mask bits (bit 0 = Sunday).
   const WEEKDAYS = [['Mo', 1], ['Tu', 2], ['We', 3], ['Th', 4], ['Fr', 5], ['Sa', 6], ['Su', 0]];
   const SLIDER_KINDS = ['brightness', 'temperature', 'color'];
-  const hex4 = n => '0x' + n.toString(16).toUpperCase().padStart(4, '0');
   function storageGet(key) { try { return JSON.parse(localStorage.getItem(key)); } catch (_) { return null; } }
   function storageSet(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* optional */ } }
   const events = [];
@@ -138,6 +141,7 @@
     const q = cls => el.querySelector('.' + cls);
     q('sch-title').textContent = def.title;
     if (!def.on) for (const node of el.querySelectorAll('.sch-light')) node.hidden = true;
+    q('sch-offrow').hidden = !def.offRoutine;
     const days = WEEKDAYS.map(([label, bit]) => {
       const wrap = document.createElement('label'), input = document.createElement('input');
       input.type = 'checkbox'; input.checked = true; input.dataset.bit = bit;
@@ -148,6 +152,7 @@
     const saved = storageGet(storeKey);
     const v = {enabled: false, weekdays: 0x7F, ...def.defaults, ...(saved || {})};
     q('sch-enabled').checked = !!v.enabled; q('sch-time').value = v.time; q('sch-fade').value = v.fade;
+    if (def.offRoutine) { q('sch-off-enabled').checked = !!v.offEnabled; q('sch-off-time').value = v.offTime; }
     // White slider runs warm → cold like the live one: mired = 607 - position; 0 % = warmest.
     const showWhite = () => {
       const position = Number(q('sch-mired').value);
@@ -162,7 +167,8 @@
       if (!s) { q('sch-saved').textContent = 'Not saved from this browser yet.'; return; }
       const dayList = WEEKDAYS.filter(([, bit]) => s.weekdays & (1 << bit)).map(([label]) => label).join(' ');
       q('sch-saved').textContent = (s.enabled ? 'Active: ' + s.time + ' · ' + (s.weekdays === 0x7F ? 'daily' : dayList) +
-        (def.on ? ' · ' + s.brightness + ' % brightness · white ' + whitePercent(s.mired) + ' %' : '') + ' · ' + s.fade + ' min fade' : 'Saved as inactive') + ' · sent ' + new Date(s.sentAt).toLocaleString();
+        (def.on ? ' · ' + s.brightness + ' % brightness · white ' + whitePercent(s.mired) + ' %' : '') + ' · ' + s.fade + ' min fade' +
+        (s.offEnabled ? ' · off at ' + s.offTime : '') : 'Saved as inactive') + ' · sent ' + new Date(s.sentAt).toLocaleString();
     };
     showSaved(saved);
     const save = q('sch-save');
@@ -174,7 +180,17 @@
       if (!(fade >= 0 && fade <= 63)) { $('status').textContent = def.title + ': fade must be 0–63 minutes.'; return; }
       const [hour, minute] = time.split(':').map(Number);
       const record = {enabled: q('sch-enabled').checked, time, weekdays, fade};
-      const schedule = {address: lamp.scheduleAddress, routine: def.routine, enabled: record.enabled, hour, minute, weekdays, fade, on: def.on};
+      const schedule = {address: SCHEDULE_ADDRESS, routine: def.routine, enabled: record.enabled, hour, minute, weekdays, fade, on: def.on,
+        parts: def.offRoutine ? P.PARTS.first : P.PARTS.single};
+      let offPart = null;
+      if (def.offRoutine) {
+        record.offEnabled = q('sch-off-enabled').checked; record.offTime = q('sch-off-time').value;
+        if (!/^\d\d:\d\d$/.test(record.offTime)) { $('status').textContent = def.title + ': enter an off time.'; return; }
+        const [offHour, offMinute] = record.offTime.split(':').map(Number);
+        // Same weekdays as the on-part, as the app does.
+        offPart = {address: SCHEDULE_ADDRESS, routine: def.offRoutine, enabled: record.enabled && record.offEnabled,
+          hour: offHour, minute: offMinute, weekdays, offPart: true, parts: P.PARTS.second};
+      }
       if (def.on) {
         record.brightness = Math.min(100, Math.max(1, Math.round(Number(q('sch-brightness').value) || 100)));
         record.mired = 607 - Number(q('sch-mired').value);
@@ -182,6 +198,11 @@
       } else schedule.keepLight = true;
       queue(lamp, 'clock', null);
       queue(lamp, 'schedule:' + def.routine, schedule);
+      if (offPart) queue(lamp, 'schedule:' + def.offRoutine, offPart);
+      if (def.replaces) {
+        queue(lamp, 'schedule:' + def.replaces, {address: SCHEDULE_ADDRESS, routine: def.replaces, enabled: false, hour, minute,
+          weekdays: 0x7F, fade: 0, on: false, keepLight: true});
+      }
       record.sentAt = Date.now();
       storageSet(storeKey, record); showSaved(record);
       $('status').textContent = lamp.name + ': ' + def.title + ' sent.';
@@ -199,9 +220,10 @@
       const now = Math.floor(Date.now() / 1000), offset = -new Date().getTimezoneOffset() * 60;
       return ['clock (UTC offset ' + offset / 3600 + ' h)', key => P.clockPacket(key, now, offset)];
     },
-    schedule: s => ['schedule routine ' + s.routine + ': ' + (s.enabled ? (s.on ? 'ON' : 'OFF') + ' at ' + s.hour + ':' + String(s.minute).padStart(2, '0') +
-      ', weekdays 0x' + s.weekdays.toString(16) + ', fade ' + s.fade + ' min' + (s.keepLight ? ', light unchanged' : ', ' + s.brightness + ' %, ' + s.mired + ' mired')
-      : 'disabled') + ', address ' + hex4(s.address), key => P.schedulePacket(key, s)]
+    schedule: s => ['schedule routine ' + s.routine + (s.offPart ? ' (off-part)' : '') + ': ' + (s.enabled ? (s.offPart ? 'OFF' : s.on ? 'ON' : 'OFF') +
+      ' at ' + s.hour + ':' + String(s.minute).padStart(2, '0') + ', weekdays 0x' + s.weekdays.toString(16) +
+      (s.offPart ? '' : ', fade ' + s.fade + ' min' + (s.keepLight ? ', light unchanged' : ', ' + s.brightness + ' %, ' + s.mired + ' mired'))
+      : 'disabled') + ', parts 0x' + (s.parts ?? 1).toString(16).padStart(2, '0'), key => P.schedulePacket(key, s)]
   };
   // Coalesce: slider drags replace the pending value, so only the newest is sent.
   function queue(lamp, kind, value) {

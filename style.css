@@ -18,3 +18,4 @@ select{margin-top:6px}
 .switch input,.weekdays input{width:auto;margin:0}
 .weekdays{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:14px}
 .weekdays label{display:flex;gap:4px;align-items:center;margin:0;font-weight:500}
+.sch-offrow input[type=time]{width:auto;padding:6px 8px}

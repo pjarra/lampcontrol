@@ -67,12 +67,17 @@
   const OP = Object.freeze({power: [6, 0], brightness: [8, 0], color: [0, 3]});
   const RANGE = Object.freeze({brightness: [2, 254], mired: [153, 454], byte: [0, 254], candle: [1, 254]});
   const EPOCH_2000 = 946684800;
-  // Schedules carry a mesh address in the body: the lamp's own address
-  // (0xC7B4 verified), or 0x0000 where it is unusable (0xFFFE lamp verified).
+  // Schedules carry a mesh address in the body. The AwoX app writes 0x0000 for
+  // every lamp (capture 2026-11-05); 0xC7B4 also worked on the Standleuchte.
   const scheduleAddressOK = a => Number.isInteger(a) && a >= 0 && a <= 0xFFFD;
-  // Verified 2026-11-05: timer (2) switches off, program (3) switches on with
-  // brightness/white, dawn (7) fades up. Presence simulator (1) is excluded.
-  const ROUTINE = Object.freeze({timer: 2, program: 3, dawn: 7});
+  // Verified on hardware: timer (2) switches off, program (3) switches on with
+  // brightness/white, dawn (7) fades up. From the AwoX app capture: an off-time
+  // is a second routine paired with the first (dawn 7 + 8; readback suggests
+  // nightlight 5 + 6). Presence simulator (1) is excluded.
+  const ROUTINE = Object.freeze({timer: 2, program: 3, nightlight: 5, nightlightOff: 6, dawn: 7, dawnOff: 8});
+  // Last body byte, part counters: single = 0x01 (upstream, verified);
+  // the app writes a pair as 0x10 (on-part) and 0x11 (off-part).
+  const PARTS = Object.freeze({single: 0x01, first: 0x10, second: 0x11});
   const SCHEDULE_ROUTINES = new Set(Object.values(ROUTINE));
   function intIn(value, [low, high], what) {
     if (!Number.isInteger(value) || value < low || value > high) throw new Error(what + ' out of range');
@@ -128,6 +133,15 @@
     // 12-byte schedule body after opcode 0x33; layout in upstream docs/protocol.md.
     if (!scheduleAddressOK(s.address)) throw new Error('Schedule address not allowed');
     if (!SCHEDULE_ROUTINES.has(s.routine)) throw new Error('Routine not enabled in this build');
+    const parts = s.parts ?? PARTS.single;
+    if (!Object.values(PARTS).includes(parts)) throw new Error('Bad part counters');
+    // Off-part of a pair, exactly as the app writes it: hour byte bit 5 set,
+    // mode/brightness/temperature all zero.
+    if (s.offPart) {
+      return queryBlock([0x33, s.address & 255, s.address >>> 8, s.routine | (s.enabled ? 0x80 : 0),
+        1 | (intIn(s.minute, [0, 59], 'Minute') << 2), intIn(s.hour, [0, 23], 'Hour') | 0x20,
+        intIn(s.weekdays, [1, 0x7F], 'Weekdays') | 0x80, 0, 0, 0, 0, 0, parts]);
+    }
     const body = [
       s.address & 255, s.address >>> 8,
       s.routine | (s.enabled ? 0x80 : 0),
@@ -139,7 +153,7 @@
       (s.on ? 1 : 0) | (s.keepLight ? 1 << 2 : 0),
       s.keepLight ? 0xFF : intIn(s.brightness, [0, 100], 'Schedule brightness'),
       ...(s.keepLight ? [0xFF, 0xFF] : [intIn(s.mired, RANGE.mired, 'Temperature')].flatMap(m => [m & 255, m >>> 8])),
-      1 // single schedule: current=1, total=0 (total=1 is silently dropped)
+      parts
     ];
     return queryBlock([0x33, ...body]);
   }
@@ -197,6 +211,14 @@
       [schedulePacket(key, {address: 0xC7B4, routine: 7, enabled: true, hour: 7, minute: 0,
         weekdays: 0x08, fade: 1, on: true, brightness: 100, mired: 153}), '029c80f0687a180b933c6aac6e1c4d8b9f']
     ];
+    // Plaintext blocks of the AwoX app's own wake-up save (on 6:15 Mon-Fri, off 8:30), from the capture.
+    const appOn = hex(scheduleBlock({address: 0, routine: 7, enabled: true, hour: 6, minute: 15, weekdays: 0x3E,
+      fade: 30, on: true, brightness: 100, mired: 249, parts: PARTS.first}));
+    const appOff = hex(scheduleBlock({address: 0, routine: 8, enabled: true, hour: 8, minute: 30, weekdays: 0x3E,
+      offPart: true, parts: PARTS.second}));
+    if (appOn !== '260d330000873d06be1e0164f9001000' || appOff !== '1d0d330000887928be00000000001100') {
+      throw new Error('Schedule pair self-test failed');
+    }
     const results = await Promise.all(expect.map(([promise]) => promise));
     if (hex(pair) !== '0c00010203040506077f4e2d01cbd9af89' ||
         hex(key) !== '03a53246e89ea73e0a5d38ae66d370d6' ||
@@ -206,7 +228,7 @@
     key.fill(0);
     return true;
   }
-  const api = {TARGETS, RANGE, ROUTINE, hex, credentials, attEncrypt, crc8, pairPacket, sessionKey, powerBlock, brightnessBlock, temperatureBlock,
+  const api = {TARGETS, RANGE, ROUTINE, PARTS, hex, credentials, attEncrypt, crc8, pairPacket, sessionKey, powerBlock, brightnessBlock, temperatureBlock,
     colorBlock, candleBlock, queryBlock, clockBlock, scheduleBlock,
     powerPacket, brightnessPacket, temperaturePacket, colorPacket, candlePacket, clockPacket, schedulePacket, selfTest};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
