@@ -22,6 +22,18 @@ git commit -am "Add lamp" && git push
 
 This updates `lamps.json`, which the page loads on start, on every device.
 
+## Settings file and reading the lamps
+
+Wake-up lights, switching times and scenes can be exported and imported as one editable JSON file
+(page → *Settings file*). On the Mac, read what the lamps really hold into the same format:
+
+```bash
+swift tools/lampsync.swift            # asks for the mesh credentials; writes lampcontrol-settings.json
+```
+
+Import that file in the page on any device, adjust if needed, then *Save all to lamp* per lamp.
+Settings files stay out of git (`.gitignore`). `tools/readback.swift` is the raw diagnostic version.
+
 ## Development
 
 Local: `python3 -m http.server 8765 --bind 127.0.0.1`, then open <http://localhost:8765> in Chrome.
