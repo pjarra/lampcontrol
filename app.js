@@ -373,6 +373,7 @@
     for (const d of days) d.checked = !!(v.weekdays & (1 << d.dataset.bit));
     const showSaved = s => {
       if (!s) { q('sch-saved').textContent = 'Not saved from this browser yet.'; return; }
+      if (s.imported) { q('sch-saved').textContent = 'Loaded from a settings file; not yet saved to the lamp.'; return; }
       const dayList = WEEKDAYS.filter(([, bit]) => s.weekdays & (1 << bit)).map(([label]) => label).join(' ');
       q('sch-saved').textContent = (s.enabled ? 'Active: ' + s.time + ' · ' + (s.weekdays === 0x7F ? 'daily' : dayList) +
         (def.on ? ' · ' + s.brightness + ' % brightness · white ' + whitePercent(s.mired) + ' %' : '') + ' · ' + s.fade + ' min fade' +
@@ -617,7 +618,8 @@
     try { await navigator.clipboard.writeText(url); button.textContent = 'Copied'; setTimeout(() => { button.textContent = label; }, 2000); }
     catch (_) { $(box).hidden = false; $(field).value = url; $(field).select(); }
   }
-  const sceneURL = s => location.origin + location.pathname + '?scene=' + encodeScene(s);
+  // Fragment (#), so the scene never reaches the server; old ?scene= links still work.
+  const sceneURL = s => location.origin + location.pathname + '#scene=' + encodeScene(s);
   const describe = l => !l.on ? 'off' : Math.round((l.b - 2) / 2.52) + ' %, ' +
     (l.c ? 'colour ' + Math.round(l.c[0] * 360 / 254) + '°' : 'white ' + whitePercent(l.t) + ' %');
 
@@ -680,7 +682,8 @@
     $('status').textContent = 'Scene “' + scene.name + '” saved in this browser.';
   });
   // A scene from a link (?scene=…): offer to apply or keep it.
-  const incoming = decodeScene(new URLSearchParams(location.search).get('scene') || '');
+  const incoming = decodeScene((location.hash.match(/^#scene=([A-Za-z0-9_-]+)$/) || [])[1] ||
+    new URLSearchParams(location.search).get('scene') || '');
   if (incoming) {
     $('incoming-name').textContent = incoming.name; $('scene-incoming').hidden = false;
     $('incoming-apply').addEventListener('click', () => applyScene(incoming));
@@ -690,57 +693,165 @@
     });
   }
 
-  // ---- Backup: scenes, switching-time lists and wake-up settings in one link (#backup=…,
-  // a fragment, so it never reaches the server). Restored data is untrusted: sanitized.
-  const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
-  const hhmm = v => typeof v === 'string' && /^\d\d:\d\d$/.test(v);
-  function cleanTimer(t) {
-    if (!t || !hhmm(t.time) || !int(t.days, 1, 0x7F) || typeof t.on !== 'boolean') return null;
-    return {enabled: !!t.enabled, time: t.time, days: t.days, on: t.on, b: int(t.b, 1, 100) ? t.b : 60,
-      mode: t.mode === 'color' ? 'color' : 'white', mired: int(t.mired, 153, 454) ? t.mired : 370,
-      h: int(t.h, 0, 254) ? t.h : 0, s: int(t.s, 0, 254) ? t.s : 254, fade: int(t.fade, 0, 63) ? t.fade : 0};
+  // ---- Settings file: wake-up lights, switching times and scenes in one human-editable
+  // JSON file (also written by tools/lampsync.swift from what the lamps really hold).
+  // Imported data is untrusted: every value is checked; nothing is imported on errors.
+  const FILE_FORMAT = 'lampcontrol/1';
+  const hhmm = v => typeof v === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(v);
+  const DAY_NAMES = [['mo', 1], ['tu', 2], ['di', 2], ['we', 3], ['mi', 3], ['th', 4], ['do', 4], ['fr', 5], ['sa', 6], ['su', 0], ['so', 0]];
+  const DAY_ORDER = [1, 2, 3, 4, 5, 6, 0]; // Monday first
+  function daysToText(mask) {
+    if (mask === 0x7F) return 'daily';
+    if (mask === 0x3E) return 'Mo-Fr';
+    if (mask === 0x41) return 'Sa-Su';
+    return WEEKDAYS.filter(([, bit]) => mask & (1 << bit)).map(([label]) => label).join(', ');
   }
-  function cleanWake(w) {
-    if (!w || !hhmm(w.time) || !int(w.weekdays, 1, 0x7F)) return null;
-    return {enabled: !!w.enabled, time: w.time, weekdays: w.weekdays, fade: int(w.fade, 0, 63) ? w.fade : 30,
-      brightness: int(w.brightness, 1, 100) ? w.brightness : 100, mired: int(w.mired, 153, 454) ? w.mired : 250,
-      offEnabled: !!w.offEnabled, offTime: hhmm(w.offTime) ? w.offTime : '08:30'};
-  }
-  function collectBackup() {
-    return {v: 1, at: Date.now(), scenes,
-      lamps: LAMPS.map(l => ({id: l.id, name: l.name, timers: storageGet('timers:' + l.id)?.entries || [],
-        wake: storageGet('schedule:' + l.id + ':wake')}))};
-  }
-  $('backup-share').addEventListener('click', () => {
-    const url = location.origin + location.pathname + '#backup=' + encodeJSON(collectBackup());
-    shareLink('Lamp Control backup', url, $('backup-share'), 'backup-link', 'backup-url');
-  });
-  const incomingBackup = (() => {
-    const m = location.hash.match(/^#backup=([A-Za-z0-9_-]+)$/);
-    const b = m && decodeJSON(m[1]);
-    return b && b.v === 1 && Array.isArray(b.lamps) ? b : null;
-  })();
-  function offerRestore() {
-    if (!incomingBackup) return;
-    const known = incomingBackup.lamps.filter(l => LAMPS.some(x => x.id === l.id));
-    $('backup-info').textContent = 'From ' + new Date(incomingBackup.at).toLocaleString() + ': ' +
-      (Array.isArray(incomingBackup.scenes) ? incomingBackup.scenes.length : 0) + ' scene(s), schedules for ' + known.length +
-      ' lamp(s). Replaces those on this device; then save each lamp’s schedules to the lamps.';
-    $('backup-incoming').hidden = false;
-  }
-  $('backup-ignore').addEventListener('click', () => { history.replaceState(null, '', location.pathname); $('backup-incoming').hidden = true; });
-  $('backup-restore').addEventListener('click', () => {
-    const b = incomingBackup;
-    storageSet(SCENES_KEY, (Array.isArray(b.scenes) ? b.scenes : []).map(validScene).filter(Boolean));
-    for (const l of b.lamps) {
-      if (!LAMPS.some(x => x.id === l.id)) continue;
-      const entries = (Array.isArray(l.timers) ? l.timers : []).map(cleanTimer).filter(Boolean).slice(0, TIMER_SLOTS.length);
-      // Marked unsaved: the lamps may hold something else until each list is saved.
-      storageSet('timers:' + l.id, {entries, savedAt: null, dirty: true});
-      const wake = cleanWake(l.wake);
-      if (wake) storageSet('schedule:' + l.id + ':wake', wake); else storageRemove('schedule:' + l.id + ':wake');
+  function parseDays(text) {
+    const t = String(text).trim().toLowerCase();
+    if (t === 'daily' || t === 'täglich' || t === 'every day') return 0x7F;
+    let mask = 0;
+    for (const part of t.split(/[\s,;]+/).filter(Boolean)) {
+      const range = part.match(/^([a-zä]{2})-([a-zä]{2})$/);
+      const bit = name => DAY_NAMES.find(([n]) => n === name)?.[1];
+      if (range) {
+        const from = DAY_ORDER.indexOf(bit(range[1])), to = DAY_ORDER.indexOf(bit(range[2]));
+        if (from < 0 || to < 0 || to < from) return null;
+        for (let i = from; i <= to; i++) mask |= 1 << DAY_ORDER[i];
+      } else if (bit(part) !== undefined) mask |= 1 << bit(part);
+      else return null;
     }
-    history.replaceState(null, '', location.pathname);
+    return mask || null;
+  }
+  const clampInt = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(v)));
+  const kelvinToMired = k => clampInt(1e6 / k, 153, 454);
+  const hueToByte = deg => clampInt(((deg % 360) + 360) % 360 * 254 / 360, 0, 254);
+  const satToByte = pct => clampInt(pct * 2.54, 0, 254);
+  const colourOut = (h, s) => ({hue: Math.round(h * 360 / 254), saturation: Math.round(s / 2.54)});
+
+  function exportSettings() {
+    const lamps = LAMPS.map(l => {
+      const w = storageGet('schedule:' + l.id + ':wake');
+      const times = (storageGet('timers:' + l.id)?.entries || []).map(t => ({
+        time: t.time, days: daysToText(t.days), action: t.on ? 'on' : 'off',
+        ...(t.on ? {brightness: t.b, ...(t.mode === 'color' ? {colour: colourOut(t.h, t.s)} : {white: kelvin(t.mired)}), fade: t.fade} : {}),
+        ...(t.enabled ? {} : {active: false})}));
+      return {name: l.name, id: l.id,
+        wakeup: w ? {active: !!w.enabled, time: w.time, days: daysToText(w.weekdays), fade: w.fade, brightness: w.brightness,
+          white: kelvin(w.mired), off: w.offEnabled ? w.offTime : null} : null,
+        times};
+    });
+    const sceneOut = scenes.map(s => ({name: s.name, lamps: s.lamps.map(l => ({lamp: l.name || l.id, id: l.id, on: l.on,
+      ...(l.on ? {brightness: Math.round((l.b - 2) / 2.52), ...(l.c ? {colour: colourOut(l.c[0], l.c[1])} : {white: kelvin(l.t)})} : {})}))}));
+    return {format: FILE_FORMAT, exported: new Date().toISOString(), lamps, scenes: sceneOut};
+  }
+
+  // Returns {errors, apply()} — apply writes to this browser's storage.
+  function readSettings(json) {
+    const errors = [], warnings = [], out = {lamps: [], scenes: null};
+    const where = (lamp, i) => lamp + (i === undefined ? '' : ', switching time ' + (i + 1));
+    const num = (v, lo, hi, what, ctx) => { if (typeof v !== 'number' || !isFinite(v) || v < lo || v > hi) errors.push(ctx + ': ' + what + ' must be ' + lo + '–' + hi); return v; };
+    const light = (e, ctx) => {
+      if (e.colour) {
+        num(e.colour.hue, 0, 360, 'colour.hue', ctx); num(e.colour.saturation, 0, 100, 'colour.saturation', ctx);
+        return {mode: 'color', h: hueToByte(e.colour.hue || 0), s: satToByte(e.colour.saturation ?? 100)};
+      }
+      num(e.white, 2200, 6600, 'white (Kelvin)', ctx);
+      return {mode: 'white', mired: kelvinToMired(e.white || 2700)};
+    };
+    if (!json || json.format !== FILE_FORMAT || !Array.isArray(json.lamps)) return {errors: ['Not a Lamp Control settings file (format "' + FILE_FORMAT + '").']};
+    for (const fl of json.lamps) {
+      const lamp = LAMPS.find(l => l.id === String(fl?.id || '').toLowerCase()) ||
+        LAMPS.find(l => l.name.toLowerCase() === String(fl?.name || '').toLowerCase());
+      if (!lamp) { warnings.push('lamp "' + (fl?.name || fl?.id) + '" is not in lamps.json and was skipped'); continue; }
+      const entries = [];
+      (Array.isArray(fl.times) ? fl.times : []).forEach((e, i) => {
+        const ctx = where(lamp.name, i);
+        if (!hhmm(e?.time)) { errors.push(ctx + ': time must be HH:MM'); return; }
+        const days = parseDays(e.days ?? 'daily');
+        if (!days) errors.push(ctx + ': days "' + e.days + '" not understood (e.g. daily, Mo-Fr, Sa-Su, Mo, We, Fr)');
+        if (e.action !== 'on' && e.action !== 'off') errors.push(ctx + ': action must be "on" or "off"');
+        const t = {enabled: e.active !== false, time: e.time, days: days || 0x7F, on: e.action === 'on', b: 60, mode: 'white', mired: 370, h: 0, s: 254, fade: 0};
+        if (t.on) {
+          t.b = clampInt(num(e.brightness ?? 60, 1, 100, 'brightness', ctx), 1, 100);
+          t.fade = clampInt(num(e.fade ?? 0, 0, 63, 'fade', ctx), 0, 63);
+          Object.assign(t, light(e, ctx));
+        }
+        entries.push(t);
+      });
+      if (entries.length > TIMER_SLOTS.length) errors.push(lamp.name + ': at most ' + TIMER_SLOTS.length + ' switching times');
+      if (entries.filter(t => t.on).length > TIMER_SLOTS.length - 1) errors.push(lamp.name + ': at most ' + (TIMER_SLOTS.length - 1) + ' On entries');
+      let wake = null;
+      if (fl.wakeup) {
+        const w = fl.wakeup, ctx = lamp.name + ', wake-up';
+        if (!hhmm(w.time)) errors.push(ctx + ': time must be HH:MM');
+        if (w.off !== null && w.off !== undefined && !hhmm(w.off)) errors.push(ctx + ': off must be HH:MM or null');
+        const days = parseDays(w.days ?? 'daily');
+        if (!days) errors.push(ctx + ': days "' + w.days + '" not understood');
+        num(w.white ?? 4000, 2200, 6600, 'white (Kelvin)', ctx);
+        wake = {enabled: w.active !== false, time: w.time, weekdays: days || 0x7F,
+          fade: clampInt(num(w.fade ?? 30, 0, 63, 'fade', ctx), 0, 63), brightness: clampInt(num(w.brightness ?? 100, 1, 100, 'brightness', ctx), 1, 100),
+          mired: kelvinToMired(w.white ?? 4000), offEnabled: hhmm(w.off), offTime: hhmm(w.off) ? w.off : '08:30', imported: true};
+      }
+      out.lamps.push({lamp, entries, wake});
+    }
+    if (Array.isArray(json.scenes)) {
+      out.scenes = [];
+      for (const fs of json.scenes) {
+        const lamps = [];
+        for (const sl of Array.isArray(fs?.lamps) ? fs.lamps : []) {
+          const lamp = LAMPS.find(l => l.id === String(sl?.id || '').toLowerCase()) || LAMPS.find(l => l.name.toLowerCase() === String(sl?.lamp || '').toLowerCase());
+          if (!lamp) { warnings.push('scene "' + fs?.name + '": lamp "' + (sl?.lamp || sl?.id) + '" skipped'); continue; }
+          const ctx = 'Scene "' + fs?.name + '", ' + lamp.name;
+          if (sl.on === false) { lamps.push({id: lamp.id, name: lamp.name, on: false}); continue; }
+          const b = 2 + clampInt(num(sl.brightness ?? 50, 0, 100, 'brightness', ctx) * 2.52, 0, 252);
+          const l = light(sl, ctx);
+          lamps.push({id: lamp.id, name: lamp.name, on: true, b, ...(l.mode === 'color' ? {c: [l.h, l.s]} : {t: l.mired})});
+        }
+        const scene = validScene({name: fs?.name, lamps});
+        if (!scene) errors.push('Scene "' + fs?.name + '": needs a name (up to 30 characters) and at least one lamp');
+        else out.scenes.push(scene);
+      }
+    }
+    return {errors, warnings, out};
+  }
+  function applySettings(out) {
+    for (const {lamp, entries, wake} of out.lamps) {
+      // Marked unsaved: the lamps hold something else until each lamp's lists are saved.
+      storageSet('timers:' + lamp.id, {entries, savedAt: null, dirty: true});
+      if (wake) storageSet('schedule:' + lamp.id + ':wake', wake); else storageRemove('schedule:' + lamp.id + ':wake');
+    }
+    if (out.scenes) storageSet(SCENES_KEY, out.scenes);
+  }
+  $('file-export').addEventListener('click', async () => {
+    const text = JSON.stringify(exportSettings(), null, 2) + '\n';
+    const name = 'lampcontrol-settings.json';
+    // Phones: share sheet ("Save to Files", AirDrop); desktop: a normal download.
+    const file = typeof File === 'function' ? new File([text], name, {type: 'application/json'}) : null;
+    if (matchMedia('(pointer: coarse)').matches && file && navigator.canShare?.({files: [file]})) {
+      try { await navigator.share({files: [file], title: name}); return; } catch (error) { if (error?.name === 'AbortError') return; }
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], {type: 'application/json'})); a.download = name;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    $('file-status').textContent = 'Exported ' + name + '.';
+  });
+  $('file-import').addEventListener('click', () => $('file-input').click());
+  $('file-input').addEventListener('change', async () => {
+    const file = $('file-input').files[0];
+    $('file-input').value = '';
+    if (!file) return;
+    let json = null;
+    try { json = JSON.parse(await file.text()); } catch (_) { /* reported below */ }
+    const {errors, warnings = [], out} = json ? readSettings(json) : {errors: ['The file is not valid JSON (check commas and quotes).']};
+    if (errors.length) {
+      $('file-status').textContent = 'Not imported: ' + errors.slice(0, 8).join(' · ') + (errors.length > 8 ? ' …' : '');
+      return;
+    }
+    applySettings(out);
+    try { sessionStorage.setItem('flash', 'Imported ' + file.name + ': ' + out.lamps.length + ' lamp(s)' +
+      (out.scenes ? ', ' + out.scenes.length + ' scene(s)' : '') + (warnings.length ? ' (' + warnings.join('; ') + ')' : '') +
+      '. Now save each lamp’s schedules to the lamp.'); } catch (_) { /* optional */ }
     location.reload();
   });
 
@@ -864,7 +975,7 @@
     syncAll();
     $('scene-new').disabled = !bootOK || !LAMPS.length;
     renderScenes();
-    offerRestore();
+    try { const flash = sessionStorage.getItem('flash'); if (flash) { $('status').textContent = flash; sessionStorage.removeItem('flash'); } } catch (_) { /* optional */ }
   })();
   syncAll();
 })();

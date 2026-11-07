@@ -18,10 +18,6 @@
 <body>
 <main>
   <div id="update" class="notice" hidden><strong>A newer version is available.</strong> <button id="reload" class="secondary compact">Reload</button></div>
-  <div id="backup-incoming" class="notice" hidden>
-    <strong>Restore a backup?</strong> <span id="backup-info"></span>
-    <div class="actions"><button id="backup-restore">Restore on this device</button><button id="backup-ignore" class="secondary compact">Ignore</button></div>
-  </div>
   <header class="top">
     <div><span class="eyebrow">EGLO · AwoX</span><h1>Lampen</h1></div>
     <div class="all-power" role="group" aria-label="All lamps">
@@ -166,13 +162,14 @@
 
 
   <section class="card">
-    <h2>Backup</h2>
-    <p class="small">One link with all scenes, switching-time lists and wake-up settings (no credentials). Open it on another device to restore everything there, or keep it in Notes.</p>
-    <div class="actions"><button id="backup-share" class="secondary">Share backup link</button></div>
-    <div id="backup-link" hidden>
-      <label for="backup-url">Backup link: copy it and keep it somewhere safe</label>
-      <input id="backup-url" type="text" readonly>
+    <h2>Settings file</h2>
+    <p class="small">Wake-up lights, switching times and scenes as one editable JSON file, stored wherever you keep it (not on GitHub). Import on any device, then save each lamp’s schedules. <code>tools/lampsync.swift</code> on the Mac writes the same file from what the lamps really hold.</p>
+    <div class="actions">
+      <button id="file-export" class="secondary">Export file</button>
+      <button id="file-import" class="secondary">Import file…</button>
+      <input id="file-input" type="file" accept=".json,application/json" hidden>
     </div>
+    <p id="file-status" class="small"></p>
   </section>
 
   <details class="card"><summary>Log</summary>

@@ -3,3 +3,4 @@
 *decoded*.txt
 __pycache__/
 .DS_Store
+lampcontrol-settings*.json

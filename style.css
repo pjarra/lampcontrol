@@ -165,3 +165,4 @@ details[open] > summary::after { transform: rotate(90deg); }
 #scene-url { margin-top: 10px; }
 
 footer { margin-top: 20px; text-align: center; }
+code{font:.8em ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--surface-2);padding:1px 5px;border-radius:6px}
