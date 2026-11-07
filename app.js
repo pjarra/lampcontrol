@@ -109,7 +109,9 @@
       return [name, P.credentials($('mesh-password').value)];
     } catch (_) {
       if (name) name.fill(0);
-      $('status').textContent = 'Enter both mesh credentials, each 1–16 UTF-8 bytes.';
+      $('status').textContent = 'Enter both mesh credentials (each 1–16 UTF-8 bytes); tick “Remember” to keep them on this device.';
+      log('No mesh credentials entered; connection not started.');
+      $('credentials').open = true; $('credentials').scrollIntoView({block: 'start'});
       return null;
     }
   }
@@ -127,6 +129,14 @@
     };
     // error.name is a standard DOMException/Error type and safe to show; error.message may not be.
     const kind = typeof error?.name === 'string' ? error.name.slice(0, 40) : typeof error;
+    // Bluefy rejects a closed or empty picker with a bare number. Its picker cannot filter by
+    // advertisement data, so a lamp's own Connect shows nothing there: point to the mesh card.
+    if (kind === 'number' || kind === 'NotFoundError') {
+      const text = lamp === MESH ? 'Mesh: no lamp selected. Try “Pick from full list” in the top card.'
+        : lamp.name + ': no lamp selected. If the list was empty (e.g. in Bluefy), use “All lamps, one connection” above instead.';
+      log(text); $('status').textContent = text; syncAll();
+      return;
+    }
     const text = lamp.name + ': ' + (error?.safeCode ? error.safeCode + ': ' + error.message :
       (known[kind] || 'Operation failed. Reconnect.') + ' [' + kind + ']');
     log(text); $('status').textContent = text; syncAll();
