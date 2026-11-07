@@ -79,9 +79,10 @@
   // Last body byte, part counters: single = 0x01 (upstream, verified);
   // the app writes a pair as 0x10 (on-part) and 0x11 (off-part).
   const PARTS = Object.freeze({single: 0x01, first: 0x10, second: 0x11});
-  // Experiment (2026-11-07): unused IDs 4, 9, 10 as possible extra slots.
-  const EXPERIMENT_ROUTINES = Object.freeze([4, 9, 10]);
-  const SCHEDULE_ROUTINES = new Set([...Object.values(ROUTINE), ...EXPERIMENT_ROUTINES]);
+  // Unused IDs work as extra slots (4, 9, 10 verified 2026-11-07). Any ID 2..127 is allowed
+  // (7-bit field); 1 (presence simulator) stays excluded. Probes for the slot-range test:
+  const EXPERIMENT_ROUTINES = Object.freeze([16, 32, 64, 127]);
+  const SCHEDULE_ROUTINES = new Set(Array.from({length: 126}, (_, i) => i + 2));
   function intIn(value, [low, high], what) {
     if (!Number.isInteger(value) || value < low || value > high) throw new Error(what + ' out of range');
     return value;

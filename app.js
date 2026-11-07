@@ -232,21 +232,23 @@
     const box = q('schedules');
     lamp.schedules = SCHEDULES.map(def => setupSchedule(lamp, def, box));
 
-    // Experiment: unused routine IDs (4, 9, 10) as extra slots, one single schedule each.
-    // (A 3-part program in slot 3 with counters 0x20-0x22 did nothing: parts only link known pairs.)
+    // Experiment: highest usable slot ID. Probes one minute apart alternate the lamp state.
+    // (Earlier: a 3-part program in slot 3 did nothing; unused IDs 4, 9, 10 each worked.)
+    const LIGHTS = [{on: true, brightness: 30, mired: 370}, {on: false, keepLight: true},
+      {on: true, brightness: 100, mired: 153}, {on: false, keepLight: true}];
     const labSteps = enabled => {
       const base = new Date(Date.now() + 120000), at = k => new Date(base.getTime() + k * 60000);
-      return [[0, {on: true, brightness: 30, mired: 370}], [1, {on: false, keepLight: true}], [2, {on: true, brightness: 100, mired: 153}]]
-        .map(([k, light]) => ({time: at(k), schedule: {address: SCHEDULE_ADDRESS, routine: P.EXPERIMENT_ROUTINES[k], enabled,
-          hour: at(k).getHours(), minute: at(k).getMinutes(), weekdays: 0x7F, fade: 0, ...light}}));
+      return P.EXPERIMENT_ROUTINES.map((routine, k) => ({time: at(k), routine, schedule: {address: SCHEDULE_ADDRESS, routine, enabled,
+        hour: at(k).getHours(), minute: at(k).getMinutes(), weekdays: 0x7F, fade: 0, ...LIGHTS[k]}}));
     };
     const hm = d => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     const runLab = enabled => {
       const steps = labSteps(enabled);
       const done = tracker(steps.length, ok => {
+        const words = ['ON warm', 'OFF', 'ON cold', 'OFF'];
         q('lab-status').textContent = !ok ? 'NOT sent: the connection failed. Connect and start again.' : enabled
-          ? 'All 3 sent. Watch for: ON warm ' + hm(steps[0].time) + ' (ID 4) · OFF ' + hm(steps[1].time) + ' (ID 9) · ON bright ' + hm(steps[2].time) + ' (ID 10).'
-          : 'Test schedules removed (IDs 4, 9, 10 disabled).';
+          ? 'All ' + steps.length + ' sent. Watch for: ' + steps.map((s, k) => words[k] + ' ' + hm(s.time) + ' (ID ' + s.routine + ')').join(' · ') + '.'
+          : 'Test schedules removed (IDs ' + steps.map(s => s.routine).join(', ') + ' disabled).';
       });
       let accepted = true;
       for (const step of steps) accepted = queue(lamp, 'schedule:' + step.schedule.routine, step.schedule, done) && accepted;
