@@ -80,8 +80,10 @@
   // the app writes a pair as 0x10 (on-part) and 0x11 (off-part).
   const PARTS = Object.freeze({single: 0x01, first: 0x10, second: 0x11});
   // Unused IDs work as extra slots (4, 9, 10 verified 2026-11-07). Any ID 2..127 is allowed
-  // (7-bit field); 1 (presence simulator) stays excluded. Probes for the slot-range test:
-  const EXPERIMENT_ROUTINES = Object.freeze([16, 32, 64, 127]);
+  // (7-bit field); 1 (presence simulator) stays excluded. IDs 16, 32, 64, 127 did not fire
+  // (2026-11-07); probes for the next test, and every ID used by experiments for cleanup:
+  const EXPERIMENT_ROUTINES = Object.freeze([11, 12, 13, 14, 15]);
+  const EXPERIMENT_CLEANUP = Object.freeze([4, 9, 10, 11, 12, 13, 14, 15, 16, 32, 64, 127]);
   const SCHEDULE_ROUTINES = new Set(Array.from({length: 126}, (_, i) => i + 2));
   function intIn(value, [low, high], what) {
     if (!Number.isInteger(value) || value < low || value > high) throw new Error(what + ' out of range');
@@ -253,7 +255,7 @@
     key.fill(0);
     return true;
   }
-  const api = {TARGETS, targetOK, RANGE, ROUTINE, PARTS, EXPERIMENT_ROUTINES, hex, credentials, attEncrypt, crc8, pairPacket, sessionKey, powerBlock, brightnessBlock, temperatureBlock,
+  const api = {TARGETS, targetOK, RANGE, ROUTINE, PARTS, EXPERIMENT_ROUTINES, EXPERIMENT_CLEANUP, hex, credentials, attEncrypt, crc8, pairPacket, sessionKey, powerBlock, brightnessBlock, temperatureBlock,
     colorBlock, candleBlock, queryBlock, clockBlock, timezoneBlock, scheduleBlock, timezonePacket,
     powerPacket, brightnessPacket, temperaturePacket, colorPacket, candlePacket, clockPacket, schedulePacket, selfTest};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

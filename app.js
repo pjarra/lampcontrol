@@ -238,14 +238,15 @@
       {on: true, brightness: 100, mired: 153}, {on: false, keepLight: true}];
     const labSteps = enabled => {
       const base = new Date(Date.now() + 120000), at = k => new Date(base.getTime() + k * 60000);
-      return P.EXPERIMENT_ROUTINES.map((routine, k) => ({time: at(k), routine, schedule: {address: SCHEDULE_ADDRESS, routine, enabled,
-        hour: at(k).getHours(), minute: at(k).getMinutes(), weekdays: 0x7F, fade: 0, ...LIGHTS[k]}}));
+      const ids = enabled ? P.EXPERIMENT_ROUTINES : P.EXPERIMENT_CLEANUP;
+      return ids.map((routine, k) => ({time: at(k), routine, schedule: {address: SCHEDULE_ADDRESS, routine, enabled,
+        hour: at(k).getHours(), minute: at(k).getMinutes(), weekdays: 0x7F, fade: 0, ...LIGHTS[k % 4]}}));
     };
     const hm = d => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     const runLab = enabled => {
       const steps = labSteps(enabled);
       const done = tracker(steps.length, ok => {
-        const words = ['ON warm', 'OFF', 'ON cold', 'OFF'];
+        const words = ['ON warm', 'OFF', 'ON cold', 'OFF', 'ON warm'];
         q('lab-status').textContent = !ok ? 'NOT sent: the connection failed. Connect and start again.' : enabled
           ? 'All ' + steps.length + ' sent. Watch for: ' + steps.map((s, k) => words[k] + ' ' + hm(s.time) + ' (ID ' + s.routine + ')').join(' · ') + '.'
           : 'Test schedules removed (IDs ' + steps.map(s => s.routine).join(', ') + ' disabled).';
