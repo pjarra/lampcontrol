@@ -162,6 +162,7 @@
       q('connect').textContent = lamp.device ? 'Pick again' : 'Connect';
       q('disconnect').disabled = !(s.busy || s.device);
       for (const c of ['on', 'off', 'brightness', 'temperature', 'hue', 'saturation']) q(c).disabled = !(direct || viaMesh);
+      q('lab-start').disabled = q('lab-clear').disabled = !(direct || viaMesh);
       for (const sch of lamp.schedules || []) {
         sch.save.disabled = !(direct || viaMesh);
         sch.save.textContent = direct ? 'Save to lamp' : 'Save to lamp (via mesh)';
@@ -223,6 +224,25 @@
     // Schedules: one slot per routine type in the lamp.
     const box = q('schedules');
     lamp.schedules = SCHEDULES.map(def => setupSchedule(lamp, def, box));
+
+    // Experiment: three parts in the program slot (3), counters 0x20/0x21/0x22 (part i of 3,
+    // the scheme the app uses for its 0x10/0x11 pairs). Keys differ so none overwrites another.
+    const labSteps = enabled => {
+      const base = new Date(Date.now() + 120000), at = k => new Date(base.getTime() + k * 60000);
+      return [[0, {on: true, brightness: 30, mired: 370}], [1, {on: false, keepLight: true}], [2, {on: true, brightness: 100, mired: 153}]]
+        .map(([k, light]) => ({time: at(k), schedule: {address: SCHEDULE_ADDRESS, routine: P.ROUTINE.program, enabled,
+          hour: at(k).getHours(), minute: at(k).getMinutes(), weekdays: 0x7F, fade: 0, parts: 0x20 | k, ...light}}));
+    };
+    const hm = d => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    const runLab = enabled => {
+      const steps = labSteps(enabled);
+      for (const [k, step] of steps.entries()) queue(lamp, 'schedule:3:part' + k, step.schedule);
+      q('lab-status').textContent = enabled
+        ? 'Sent. Watch for: ON warm ' + hm(steps[0].time) + ' · OFF ' + hm(steps[1].time) + ' · ON bright ' + hm(steps[2].time) + '.'
+        : 'Test program removed (all three parts disabled).';
+    };
+    q('lab-start').addEventListener('click', () => runLab(true));
+    q('lab-clear').addEventListener('click', () => runLab(false));
   }
 
   function setupSchedule(lamp, def, box) {
@@ -318,7 +338,7 @@
       ' at ' + s.hour + ':' + String(s.minute).padStart(2, '0') + ', weekdays 0x' + s.weekdays.toString(16) +
       (s.offPart ? '' : ', fade ' + s.fade + ' min' + (s.keepLight ? ', light unchanged' : ', ' + s.brightness + ' %, ' + s.mired + ' mired'))
       : 'disabled') + ', parts 0x' + (s.parts ?? 1).toString(16).padStart(2, '0') + ', address 0x' + s.address.toString(16).padStart(4, '0'),
-      key => P.schedulePacket(key, s), s.offPart ? 100 : undefined]) // like the app: off-part right after its on-part
+      key => P.schedulePacket(key, s), s.offPart || (s.parts & 15) ? 100 : undefined]) // like the app: later parts right after the first
   };
   // Coalesce: slider drags replace the pending value, so only the newest is sent.
   // Route for a lamp's next command: own connection, else the mesh (control commands only).

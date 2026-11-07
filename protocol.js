@@ -145,7 +145,10 @@
     if (!scheduleAddressOK(s.address)) throw new Error('Schedule address not allowed');
     if (!SCHEDULE_ROUTINES.has(s.routine)) throw new Error('Routine not enabled in this build');
     const parts = s.parts ?? PARTS.single;
-    if (!Object.values(PARTS).includes(parts)) throw new Error('Bad part counters');
+    // Single 0x01 (upstream), or current (low nibble) <= total (high nibble), as the app's 0x10/0x11.
+    if (!Number.isInteger(parts) || parts < 0 || parts > 0xFF || (parts !== PARTS.single && (parts & 15) > (parts >> 4))) {
+      throw new Error('Bad part counters');
+    }
     // Off-part of a pair, exactly as the app writes it: hour byte bit 5 set,
     // mode/brightness/temperature all zero.
     if (s.offPart) {
