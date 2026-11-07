@@ -79,7 +79,9 @@
   // Last body byte, part counters: single = 0x01 (upstream, verified);
   // the app writes a pair as 0x10 (on-part) and 0x11 (off-part).
   const PARTS = Object.freeze({single: 0x01, first: 0x10, second: 0x11});
-  const SCHEDULE_ROUTINES = new Set(Object.values(ROUTINE));
+  // Experiment (2026-11-07): unused IDs 4, 9, 10 as possible extra slots.
+  const EXPERIMENT_ROUTINES = Object.freeze([4, 9, 10]);
+  const SCHEDULE_ROUTINES = new Set([...Object.values(ROUTINE), ...EXPERIMENT_ROUTINES]);
   function intIn(value, [low, high], what) {
     if (!Number.isInteger(value) || value < low || value > high) throw new Error(what + ' out of range');
     return value;
@@ -250,7 +252,7 @@
     key.fill(0);
     return true;
   }
-  const api = {TARGETS, targetOK, RANGE, ROUTINE, PARTS, hex, credentials, attEncrypt, crc8, pairPacket, sessionKey, powerBlock, brightnessBlock, temperatureBlock,
+  const api = {TARGETS, targetOK, RANGE, ROUTINE, PARTS, EXPERIMENT_ROUTINES, hex, credentials, attEncrypt, crc8, pairPacket, sessionKey, powerBlock, brightnessBlock, temperatureBlock,
     colorBlock, candleBlock, queryBlock, clockBlock, timezoneBlock, scheduleBlock, timezonePacket,
     powerPacket, brightnessPacket, temperaturePacket, colorPacket, candlePacket, clockPacket, schedulePacket, selfTest};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

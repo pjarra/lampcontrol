@@ -225,21 +225,21 @@
     const box = q('schedules');
     lamp.schedules = SCHEDULES.map(def => setupSchedule(lamp, def, box));
 
-    // Experiment: three parts in the program slot (3), counters 0x20/0x21/0x22 (part i of 3,
-    // the scheme the app uses for its 0x10/0x11 pairs). Keys differ so none overwrites another.
+    // Experiment: unused routine IDs (4, 9, 10) as extra slots, one single schedule each.
+    // (A 3-part program in slot 3 with counters 0x20-0x22 did nothing: parts only link known pairs.)
     const labSteps = enabled => {
       const base = new Date(Date.now() + 120000), at = k => new Date(base.getTime() + k * 60000);
       return [[0, {on: true, brightness: 30, mired: 370}], [1, {on: false, keepLight: true}], [2, {on: true, brightness: 100, mired: 153}]]
-        .map(([k, light]) => ({time: at(k), schedule: {address: SCHEDULE_ADDRESS, routine: P.ROUTINE.program, enabled,
-          hour: at(k).getHours(), minute: at(k).getMinutes(), weekdays: 0x7F, fade: 0, parts: 0x20 | k, ...light}}));
+        .map(([k, light]) => ({time: at(k), schedule: {address: SCHEDULE_ADDRESS, routine: P.EXPERIMENT_ROUTINES[k], enabled,
+          hour: at(k).getHours(), minute: at(k).getMinutes(), weekdays: 0x7F, fade: 0, ...light}}));
     };
     const hm = d => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     const runLab = enabled => {
       const steps = labSteps(enabled);
-      for (const [k, step] of steps.entries()) queue(lamp, 'schedule:3:part' + k, step.schedule);
+      for (const step of steps) queue(lamp, 'schedule:' + step.schedule.routine, step.schedule);
       q('lab-status').textContent = enabled
-        ? 'Sent. Watch for: ON warm ' + hm(steps[0].time) + ' · OFF ' + hm(steps[1].time) + ' · ON bright ' + hm(steps[2].time) + '.'
-        : 'Test program removed (all three parts disabled).';
+        ? 'Sent. Watch for: ON warm ' + hm(steps[0].time) + ' (ID 4) · OFF ' + hm(steps[1].time) + ' (ID 9) · ON bright ' + hm(steps[2].time) + ' (ID 10).'
+        : 'Test schedules removed (IDs 4, 9, 10 disabled).';
     };
     q('lab-start').addEventListener('click', () => runLab(true));
     q('lab-clear').addEventListener('click', () => runLab(false));
