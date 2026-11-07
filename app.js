@@ -119,7 +119,7 @@
       return null;
     }
   }
-  function reportError(lamp, error) {
+  function reportError(lamp, error, picking = true) {
     // Browser error.message may contain device names; do not copy it into logs.
     const known = {
       NotFoundError: 'No lamp selected, or none matched. Try “Pick from full list”.',
@@ -135,14 +135,14 @@
     const kind = typeof error?.name === 'string' ? error.name.slice(0, 40) : typeof error;
     // Bluefy rejects a closed or empty picker with a bare number. Its picker cannot filter by
     // advertisement data, so a lamp's own Connect shows nothing there: point to the mesh card.
-    if (kind === 'number' || kind === 'NotFoundError') {
+    if (picking && (kind === 'number' || kind === 'NotFoundError')) {
       const text = lamp === MESH ? 'Mesh: no lamp selected. Try “Pick from full list” in the top card.'
         : lamp.name + ': no lamp selected. If the list was empty (e.g. in Bluefy), use “All lamps, one connection” above instead.';
       log(text); $('status').textContent = text; syncAll();
       return;
     }
     const text = lamp.name + ': ' + (error?.safeCode ? error.safeCode + ': ' + error.message :
-      (known[kind] || 'Operation failed. Reconnect.') + ' [' + kind + ']');
+      (known[kind] || 'Operation failed. Reconnect.') + ' [' + kind + (typeof error === 'number' ? ' ' + error : '') + ']');
     log(text); $('status').textContent = text; syncAll();
   }
 
@@ -181,7 +181,7 @@
       $('status').textContent = known ? 'Connecting to ' + lamp.name + '…' : 'Choose ' + lamp.name + ' in the Bluetooth picker…';
       lamp.session.connect(creds[0], creds[1], request, known)
         .then(() => {
-          lamp.device = lamp.session.device;
+          lamp.device = lamp.session.device; lamp.restored = false;
           storageSet('device:' + lamp.id, lamp.device.id);
           rememberCredentials();
           lamp.sync();
@@ -191,7 +191,13 @@
           queue(lamp, 'timezone', null);
           queue(lamp, 'clock', null);
         })
-        .catch(error => { dropPending(lamp); reportError(lamp, error); });
+        .catch(error => {
+          dropPending(lamp);
+          if (known && lamp.restored) { // see the mesh case: restored devices may not reconnect
+            lamp.device = null; lamp.restored = false; storageRemove('device:' + lamp.id); lamp.sync();
+          }
+          reportError(lamp, error, !known);
+        });
     };
     lamp.reconnect = () => { if (lamp.device && !lamp.session.busy && !lamp.session.device) connect(null, lamp.device); };
     q('connect').addEventListener('click', () => connect(pickerFilter(lamp.adPrefix)));
@@ -434,27 +440,40 @@
   MESH.session = new globalThis.AwoxTransport.MeshSession({
     log: text => log('Mesh: ' + text), changed: () => { for (const l of LAMPS) l.sync(); syncAll(); pumpAll(); }
   });
+  const meshFilter = () => {
+    // Advertised name = mesh name, but iOS/macOS often show the cached GATT name
+    // (EGLO_ZM_RGB_TW) instead, so accept either; any lamp of the mesh will do.
+    const name = $('mesh-name').value;
+    return {filters: [...(name ? [{name}] : []), {namePrefix: 'EGLO'}]};
+  };
   function connectMesh(request, known = null) {
     const creds = readCredentials();
     if (!creds) { for (const l of LAMPS) dropPending(l); $('credentials').open = true; return; }
     $('status').textContent = known ? 'Connecting to the mesh…' : 'Choose any lamp in the Bluetooth picker…';
     MESH.session.connect(creds[0], creds[1], request, known)
       .then(() => {
-        MESH.device = MESH.session.device; MESH.lastActivity = Date.now();
+        MESH.device = MESH.session.device; MESH.restored = false; MESH.lastActivity = Date.now();
         storageSet('device:mesh', MESH.device.id);
         rememberCredentials();
         $('status').textContent = 'Mesh connected: lamps with a mesh address are controlled through it.';
         syncAll();
       })
-      .catch(error => { for (const l of LAMPS) if (!l.session.ready) dropPending(l); reportError(MESH, error); });
+      .catch(error => {
+        // In Bluefy, a lamp restored by getDevices() after a reload fails to connect at once.
+        // Forget it and open the picker on the same tap (keeping the pending commands).
+        if (known && MESH.restored) {
+          MESH.device = null; MESH.restored = false; storageRemove('device:mesh');
+          log('Mesh: the lamp remembered from an earlier visit could not be reconnected [' +
+            (typeof error === 'number' ? 'number ' + error : error?.name) + ']; choose a lamp once more.');
+          connectMesh(meshFilter());
+          return;
+        }
+        for (const l of LAMPS) if (!l.session.ready) dropPending(l);
+        reportError(MESH, error, !known);
+      });
   }
   MESH.reconnect = () => { if (MESH.device && !MESH.session.busy && !MESH.session.device) connectMesh(null, MESH.device); };
-  $('mesh-connect').addEventListener('click', () => {
-    // Advertised name = mesh name, but iOS/macOS often show the cached GATT name
-    // (EGLO_ZM_RGB_TW) instead, so accept either; any lamp of the mesh will do.
-    const name = $('mesh-name').value;
-    connectMesh({filters: [...(name ? [{name}] : []), {namePrefix: 'EGLO'}]});
-  });
+  $('mesh-connect').addEventListener('click', () => connectMesh(meshFilter()));
   $('mesh-any').addEventListener('click', () => connectMesh({acceptAllDevices: true}));
   $('mesh-disconnect').addEventListener('click', () => { MESH.session.disconnect(); log('Mesh: disconnected by user.'); });
   for (const [id, on] of [['all-on', true], ['all-off', false]]) {
@@ -649,10 +668,12 @@
         for (const lamp of LAMPS) {
           const id = storageGet('device:' + lamp.id);
           lamp.device = devices.find(d => id && d.id === id) || null;
+          lamp.restored = !!lamp.device;
           if (lamp.device) log(lamp.name + ': remembered from an earlier visit.');
         }
         const meshId = storageGet('device:mesh');
         MESH.device = devices.find(d => meshId && d.id === meshId) || null;
+        MESH.restored = !!MESH.device;
         if (MESH.device) log('Mesh: remembered from an earlier visit.');
       } catch (_) { log('getDevices() failed; lamps need the picker once per visit.'); }
     } else if (bootOK) log('This browser has no getDevices(); pick each lamp once per visit.');
