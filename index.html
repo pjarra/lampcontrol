@@ -3,7 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f4f1ea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#16181c" media="(prefers-color-scheme: dark)">
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <title>Lamp Control</title>
@@ -16,49 +18,50 @@
 <body>
 <main>
   <div id="update" class="notice" hidden><strong>A newer version is available.</strong> <button id="reload" class="secondary compact">Reload</button></div>
-  <header><span class="eyebrow">EGLO / AWOX</span><h1>Lampen</h1></header>
-  <details id="credentials" class="card" open>
-    <summary><strong>Mesh credentials</strong> <span id="cred-state" class="small"></span></summary>
-    <p class="small">Close the AwoX/EGLO app first. Nothing is uploaded. With “Remember”, the credentials are kept in this browser on this device only.</p>
-    <label for="mesh-name">Mesh name</label>
-    <input id="mesh-name" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64">
-    <label for="mesh-password">Mesh password</label>
-    <input id="mesh-password" type="password" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64">
-    <div class="actions">
-      <label class="switch"><input id="remember" type="checkbox"> Remember on this device</label>
-      <button id="forget" class="secondary compact" hidden>Forget saved credentials</button>
+  <header class="top">
+    <div><span class="eyebrow">EGLO · AwoX</span><h1>Lampen</h1></div>
+    <div class="all-power" role="group" aria-label="All lamps">
+      <button id="all-off" class="secondary" disabled>All off</button><button id="all-on" disabled>All on</button>
     </div>
-  </details>
+  </header>
   <p id="status" class="status" role="status" aria-live="polite">Running local crypto self-test…</p>
 
   <template id="lamp-template">
     <section class="card lamp">
-      <div class="section-head"><h2 class="lamp-name"></h2><span class="badge">Disconnected</span></div>
-      <div class="actions">
-        <button class="connect" disabled>Connect</button>
-        <button class="connect-any secondary compact" disabled>Pick from full list</button>
-        <button class="disconnect secondary compact" disabled>Disconnect</button>
+      <div class="lamp-head">
+        <div><h2 class="lamp-name"></h2><span class="badge">Disconnected</span></div>
+        <div class="power-actions"><button class="off secondary" disabled>Off</button><button class="on" disabled>On</button></div>
       </div>
-      <div class="power-actions"><button class="off" disabled>OFF</button><button class="on" disabled>ON</button></div>
-      <label>Brightness <output class="brightness-out"></output></label>
+      <label class="slider-label">Brightness <output class="brightness-out"></output></label>
       <input class="brightness" type="range" min="2" max="254" value="128" disabled>
-      <label>White temperature <output class="temperature-out"></output></label>
-      <input class="temperature" type="range" min="153" max="454" value="300" disabled>
-      <div class="scale small"><span>warm</span><span>cold</span></div>
-      <label>Colour <output class="color-out"></output></label>
-      <input class="hue" type="range" min="0" max="254" value="0" disabled>
-      <label>Saturation <output class="saturation-out"></output></label>
-      <input class="saturation" type="range" min="0" max="254" value="254" disabled>
+
+      <details class="sub"><summary>Light colour</summary>
+        <label class="slider-label">White <output class="temperature-out"></output></label>
+        <input class="temperature" type="range" min="153" max="454" value="300" disabled>
+        <label class="slider-label">Colour <output class="color-out"></output></label>
+        <input class="hue" type="range" min="0" max="254" value="0" disabled>
+        <label class="slider-label">Saturation <output class="saturation-out"></output></label>
+        <input class="saturation" type="range" min="0" max="254" value="254" disabled>
+      </details>
 
       <details class="sub"><summary>Schedules</summary>
-        <p class="small">Stored in the lamp; they run with the phone off. Saving also sets the lamp clock. The lamp cannot report what is stored, so this shows what this browser last saved.</p>
+        <p class="small">Stored in the lamp; they run with the phone off. The lamp cannot report what is stored, so this shows what this browser last saved.</p>
         <div class="schedules"></div>
         <div class="schedule timers">
           <h3>Switching times</h3>
-          <p class="small">Up to 11 per lamp, any mix of on (brightness, white or colour, fade) and off. “Save all” writes the whole list to the lamp and clears unused slots, so edit a lamp’s list from one device.</p>
+          <p class="small">Up to 11 per lamp. “Save all” writes the whole list and clears unused slots, so edit a lamp’s list from one device.</p>
           <div class="timer-list"></div>
-          <div class="actions"><button class="timer-add secondary compact">Add switching time</button><button class="timer-save" disabled>Save all to lamp</button></div>
+          <div class="actions"><button class="timer-add secondary">Add switching time</button><button class="timer-save" disabled>Save all to lamp</button></div>
           <p class="small timer-saved"></p>
+        </div>
+      </details>
+
+      <details class="sub"><summary>Own connection</summary>
+        <p class="small">Only needed without the mesh (Mac/Chrome can pick this lamp directly; Bluefy cannot).</p>
+        <div class="actions">
+          <button class="connect secondary" disabled>Connect</button>
+          <button class="connect-any secondary" disabled>Pick from full list</button>
+          <button class="disconnect secondary" disabled>Disconnect</button>
         </div>
       </details>
     </section>
@@ -73,23 +76,23 @@
       </div>
       <p class="small t-off-hint">Off switches at once (the lamp ignores a fade here). To dim out, add an On entry with low brightness and a fade before it.</p>
       <div class="t-light">
-        <label>Brightness <output class="t-b-out"></output></label>
+        <label class="slider-label">Brightness <output class="t-b-out"></output></label>
         <input class="t-b" type="range" min="1" max="100">
         <label>Light <select class="t-mode"><option value="white">White</option><option value="color">Colour</option></select></label>
         <div class="t-white">
-          <label>White <output class="t-w-out"></output></label>
+          <label class="slider-label">White <output class="t-w-out"></output></label>
           <input class="t-w" type="range" min="153" max="454">
           <div class="scale small"><span>warm</span><span>cold</span></div>
         </div>
         <div class="t-color">
-          <label>Colour <output class="t-h-out"></output></label>
+          <label class="slider-label">Colour <output class="t-h-out"></output></label>
           <input class="t-h" type="range" min="0" max="254">
-          <label>Saturation <output class="t-s-out"></output></label>
+          <label class="slider-label">Saturation <output class="t-s-out"></output></label>
           <input class="t-s" type="range" min="0" max="254">
         </div>
       </div>
       <div class="weekdays"></div>
-      <div class="actions"><label class="switch"><input type="checkbox" class="t-enabled"> Active</label><button class="t-delete secondary compact">Delete</button></div>
+      <div class="actions"><label class="switch"><input type="checkbox" class="t-enabled"> Active</label><button class="t-delete danger compact">Delete</button></div>
     </details>
   </template>
   <template id="schedule-template">
@@ -98,14 +101,14 @@
       <div class="row3">
         <label>Time <input class="sch-time" type="time" value="07:00"></label>
         <label>Fade (min) <input class="sch-fade" type="number" min="0" max="63" value="1"></label>
-        <label class="sch-light">Brightness % <input class="sch-brightness" type="number" min="1" max="100" value="100"></label>
+        <label class="sch-light">Bright. % <input class="sch-brightness" type="number" min="1" max="100" value="100"></label>
       </div>
       <div class="sch-light">
-        <label>White <output class="sch-mired-out"></output></label>
+        <label class="slider-label">White <output class="sch-mired-out"></output></label>
         <input class="sch-mired" type="range" min="153" max="454" value="300">
         <div class="scale small"><span>warm</span><span>cold</span></div>
       </div>
-      <label class="switch sch-offrow"><input type="checkbox" class="sch-off-enabled"> Turn off at <input class="sch-off-time" type="time" value="08:30"></label>
+      <div class="offrow sch-offrow"><label class="switch"><input type="checkbox" class="sch-off-enabled"> Turn off at</label><input class="sch-off-time" type="time" value="08:30" aria-label="Off time"></div>
       <div class="weekdays"></div>
       <div class="actions"><button class="sch-save" disabled>Save to lamp</button></div>
       <p class="small sch-saved"></p>
@@ -128,22 +131,30 @@
     <input id="scene-url" class="small" readonly hidden aria-label="Scene link">
   </section>
 
+  <div id="lamps"></div>
+
   <section class="card">
-    <div class="section-head"><h2>All lamps, one connection</h2><span id="mesh-badge" class="badge">Not set up</span></div>
-    <p class="small">Connect to any lamp; commands reach the others through the mesh. Easiest on the iPhone. Schedules and lamps without a mesh address need their own connection below.</p>
+    <div class="section-head"><h2>Connection</h2><span id="mesh-badge" class="badge">Not set up</span></div>
+    <p class="small">One connection to any lamp reaches all of them through the mesh. It reconnects by itself when you use a control.</p>
     <div class="actions">
       <button id="mesh-connect" disabled>Connect</button>
       <button id="mesh-any" class="secondary compact" disabled>Pick from full list</button>
       <button id="mesh-disconnect" class="secondary compact" disabled>Disconnect</button>
     </div>
   </section>
-  <div id="lamps"></div>
+  <details id="credentials" class="card sub-card" open>
+    <summary><strong>Mesh credentials</strong> <span id="cred-state" class="small"></span></summary>
+    <p class="small">Close the AwoX/EGLO app first. Nothing is uploaded. With “Remember”, the credentials are kept in this browser on this device only.</p>
+    <label for="mesh-name">Mesh name</label>
+    <input id="mesh-name" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64">
+    <label for="mesh-password">Mesh password</label>
+    <input id="mesh-password" type="password" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" maxlength="64">
+    <div class="actions">
+      <label class="switch"><input id="remember" type="checkbox"> Remember on this device</label>
+      <button id="forget" class="secondary compact" hidden>Forget saved credentials</button>
+    </div>
+  </details>
 
-  <section class="card">
-    <h2>All connected lamps</h2>
-    <div class="power-actions"><button id="all-off" disabled>OFF</button><button id="all-on" disabled>ON</button></div>
-    <p class="small">Slider positions are not read back from the lamps; they show what was last sent.</p>
-  </section>
 
   <details class="card"><summary>Log</summary>
     <div class="actions"><button id="copy" class="secondary compact">Copy log</button></div>
