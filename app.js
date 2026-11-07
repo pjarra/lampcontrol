@@ -234,21 +234,23 @@
 
     // Experiment: highest usable slot ID. Probes one minute apart alternate the lamp state.
     // (Earlier: a 3-part program in slot 3 did nothing; unused IDs 4, 9, 10 each worked.)
-    const LIGHTS = [{on: true, brightness: 30, mired: 370}, {on: false, keepLight: true},
-      {on: true, brightness: 100, mired: 153}, {on: false, keepLight: true}];
+    // Probe: ID 16 alone (others cleared), then a free slot with a fade, then off.
+    const PROBE = [
+      {routine: 16, offset: 0, word: 'ON warm', light: {on: true, brightness: 30, mired: 370, fade: 0}},
+      {routine: 11, offset: 1, word: 'ON cold, 2-min fade', light: {on: true, brightness: 100, mired: 153, fade: 2}},
+      {routine: 12, offset: 4, word: 'OFF', light: {on: false, keepLight: true, fade: 0}}];
     const labSteps = enabled => {
       const base = new Date(Date.now() + 120000), at = k => new Date(base.getTime() + k * 60000);
-      const ids = enabled ? P.EXPERIMENT_ROUTINES : P.EXPERIMENT_CLEANUP;
-      return ids.map((routine, k) => ({time: at(k), routine, schedule: {address: SCHEDULE_ADDRESS, routine, enabled,
-        hour: at(k).getHours(), minute: at(k).getMinutes(), weekdays: 0x7F, fade: 0, ...LIGHTS[k % 4]}}));
+      const steps = enabled ? PROBE : P.EXPERIMENT_CLEANUP.map(routine => ({routine, offset: 0, light: {on: false, keepLight: true, fade: 0}}));
+      return steps.map(st => ({time: at(st.offset), routine: st.routine, word: st.word, schedule: {address: SCHEDULE_ADDRESS,
+        routine: st.routine, enabled, hour: at(st.offset).getHours(), minute: at(st.offset).getMinutes(), weekdays: 0x7F, ...st.light}}));
     };
     const hm = d => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     const runLab = enabled => {
       const steps = labSteps(enabled);
       const done = tracker(steps.length, ok => {
-        const words = ['ON warm', 'OFF', 'ON cold', 'OFF', 'ON warm'];
         q('lab-status').textContent = !ok ? 'NOT sent: the connection failed. Connect and start again.' : enabled
-          ? 'All ' + steps.length + ' sent. Watch for: ' + steps.map((s, k) => words[k] + ' ' + hm(s.time) + ' (ID ' + s.routine + ')').join(' · ') + '.'
+          ? 'All ' + steps.length + ' sent. Watch for: ' + steps.map(s => s.word + ' ' + hm(s.time) + ' (ID ' + s.routine + ')').join(' · ') + '.'
           : 'Test schedules removed (IDs ' + steps.map(s => s.routine).join(', ') + ' disabled).';
       });
       let accepted = true;
