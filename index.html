@@ -18,6 +18,10 @@
 <body>
 <main>
   <div id="update" class="notice" hidden><strong>A newer version is available.</strong> <button id="reload" class="secondary compact">Reload</button></div>
+  <div id="backup-incoming" class="notice" hidden>
+    <strong>Restore a backup?</strong> <span id="backup-info"></span>
+    <div class="actions"><button id="backup-restore">Restore on this device</button><button id="backup-ignore" class="secondary compact">Ignore</button></div>
+  </div>
   <header class="top">
     <div><span class="eyebrow">EGLO · AwoX</span><h1>Lampen</h1></div>
     <div class="all-power" role="group" aria-label="All lamps">
@@ -143,7 +147,9 @@
       <button id="mesh-connect" disabled>Connect</button>
       <button id="mesh-any" class="secondary compact" disabled>Pick from full list</button>
       <button id="mesh-disconnect" class="secondary compact" disabled>Disconnect</button>
+      <button id="readback" class="secondary compact" disabled>Readback test</button>
     </div>
+    <p id="readback-result" class="small"></p>
   </section>
   <details id="credentials" class="card sub-card" open>
     <summary><strong>Mesh credentials</strong> <span id="cred-state" class="small"></span></summary>
@@ -158,6 +164,16 @@
     </div>
   </details>
 
+
+  <section class="card">
+    <h2>Backup</h2>
+    <p class="small">One link with all scenes, switching-time lists and wake-up settings (no credentials). Open it on another device to restore everything there, or keep it in Notes.</p>
+    <div class="actions"><button id="backup-share" class="secondary">Share backup link</button></div>
+    <div id="backup-link" hidden>
+      <label for="backup-url">Backup link: copy it and keep it somewhere safe</label>
+      <input id="backup-url" type="text" readonly>
+    </div>
+  </section>
 
   <details class="card"><summary>Log</summary>
     <div class="actions"><button id="copy" class="secondary compact">Copy log</button></div>

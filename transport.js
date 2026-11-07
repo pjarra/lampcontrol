@@ -4,7 +4,8 @@
   const UUID = Object.freeze({
     service: '00010203-0405-0607-0809-0a0b0c0d1910',
     pair: '00010203-0405-0607-0809-0a0b0c0d1914',
-    command: '00010203-0405-0607-0809-0a0b0c0d1912'
+    command: '00010203-0405-0607-0809-0a0b0c0d1912',
+    status: '00010203-0405-0607-0809-0a0b0c0d1911'
   });
   const fail = (code, message) => Object.assign(new Error(message), {safeCode: code});
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -85,6 +86,7 @@
           connecting.then(() => { if (generation !== this.generation && device.gatt.connected) device.gatt.disconnect(); }, () => {});
           const server = await this.bounded(connecting, generation, 'GATT connection');
           const service = await this.bounded(server.getPrimaryService(UUID.service), generation, 'Service lookup');
+          this.service = service;
           this.log('Mesh service …1910 found.');
           const pair = await this.bounded(service.getCharacteristic(UUID.pair), generation, 'Authentication characteristic lookup');
           const command = await this.bounded(service.getCharacteristic(UUID.command), generation, 'Command characteristic lookup');
@@ -134,6 +136,19 @@
     }
     // build(key) returns the 17-byte packet. Commands closer than MIN_GAP are
     // swallowed by the lamp (upstream hardware notes), so wait instead.
+    // Experiment: subscribe to the status characteristic (…1911, no CCCD). onValue gets raw bytes.
+    async listen(onValue) {
+      if (!this.ready || !this.service) throw fail('NOT_AUTHENTICATED', 'Connect and authenticate first.');
+      const generation = this.generation;
+      const status = await this.bounded(this.service.getCharacteristic(UUID.status), generation, 'Status characteristic lookup');
+      this.log('Status …1911: read=' + !!status.properties.read + ', notify=' + !!status.properties.notify + '.');
+      status.addEventListener('characteristicvaluechanged', event => {
+        const v = event.target.value;
+        onValue(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+      });
+      try { await this.bounded(status.startNotifications(), generation, 'Subscription'); this.log('Subscribed to status notifications.'); }
+      catch (error) { this.log('startNotifications failed [' + (typeof error === 'number' ? 'number ' + error : error?.name) + '].'); }
+    }
     // gap: minimum ms since the previous write (the app writes schedule pairs ~0.1 s apart).
     async send(description, build, gap = MIN_GAP) {
       if (this.busy) throw fail('BUSY', 'A Bluetooth operation is already running.');

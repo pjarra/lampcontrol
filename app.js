@@ -520,6 +520,8 @@
       $('mesh-connect').disabled = $('mesh-any').disabled = !bootOK || s.busy || !!s.device;
       $('mesh-connect').textContent = MESH.device ? 'Pick again' : 'Connect';
       $('mesh-disconnect').disabled = !(s.busy || s.device);
+      $('readback').disabled = !s.ready;
+      if (!s.device) MESH.listening = false;
       $('mesh-badge').textContent = s.busy && !s.ready ? 'Connecting…' : s.ready ? 'Connected' : MESH.device ? 'Ready' : 'Not set up';
     }
   }
@@ -590,15 +592,30 @@
   }
   let scenes = (Array.isArray(storageGet(SCENES_KEY)) ? storageGet(SCENES_KEY) : []).map(validScene).filter(Boolean);
   const saveScenes = () => storageSet(SCENES_KEY, scenes);
-  function encodeScene(s) {
-    const bytes = new TextEncoder().encode(JSON.stringify(s));
-    return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  function encodeJSON(value) {
+    const bytes = new TextEncoder().encode(JSON.stringify(value));
+    let bin = '';
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
-  function decodeScene(text) {
+  function decodeJSON(text) {
     try {
       const bin = atob(text.replace(/-/g, '+').replace(/_/g, '/'));
-      return validScene(JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, ch => ch.charCodeAt(0)))));
+      return JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, ch => ch.charCodeAt(0))));
     } catch (_) { return null; }
+  }
+  const encodeScene = encodeJSON;
+  const decodeScene = text => validScene(decodeJSON(text));
+  // Share a link: share sheet if available (closing it cancels), else clipboard, else a field.
+  async function shareLink(title, url, button, box, field) {
+    $(box).hidden = true;
+    if (navigator.share) {
+      try { await navigator.share({title, url}); return; }
+      catch (error) { if (error?.name === 'AbortError') return; }
+    }
+    const label = button.textContent;
+    try { await navigator.clipboard.writeText(url); button.textContent = 'Copied'; setTimeout(() => { button.textContent = label; }, 2000); }
+    catch (_) { $(box).hidden = false; $(field).value = url; $(field).select(); }
   }
   const sceneURL = s => location.origin + location.pathname + '?scene=' + encodeScene(s);
   const describe = l => !l.on ? 'off' : Math.round((l.b - 2) / 2.52) + ' %, ' +
@@ -632,16 +649,7 @@
       // home-screen bookmark. Share sheet where available; closing it simply cancels.
       const link = document.createElement('button'); link.className = 'secondary compact'; link.textContent = 'Link';
       link.title = 'Share this scene as a link (another device, or a home-screen bookmark)';
-      link.addEventListener('click', async () => {
-        const url = sceneURL(scene);
-        $('scene-link').hidden = true;
-        if (navigator.share) {
-          try { await navigator.share({title: 'Scene: ' + scene.name, url}); return; }
-          catch (error) { if (error?.name === 'AbortError') return; /* other failures: fall back */ }
-        }
-        try { await navigator.clipboard.writeText(url); link.textContent = 'Copied'; setTimeout(() => { link.textContent = 'Link'; }, 2000); }
-        catch (_) { $('scene-link').hidden = false; $('scene-url').value = url; $('scene-url').select(); }
-      });
+      link.addEventListener('click', () => shareLink('Scene: ' + scene.name, sceneURL(scene), link, 'scene-link', 'scene-url'));
       const del = document.createElement('button'); del.className = 'secondary compact'; del.textContent = 'Delete';
       del.addEventListener('click', () => {
         if (del.textContent !== 'Sure?') { del.textContent = 'Sure?'; setTimeout(() => { del.textContent = 'Delete'; }, 3000); return; }
@@ -681,6 +689,86 @@
       $('status').textContent = 'Scene “' + incoming.name + '” saved in this browser.';
     });
   }
+
+  // ---- Backup: scenes, switching-time lists and wake-up settings in one link (#backup=…,
+  // a fragment, so it never reaches the server). Restored data is untrusted: sanitized.
+  const int = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+  const hhmm = v => typeof v === 'string' && /^\d\d:\d\d$/.test(v);
+  function cleanTimer(t) {
+    if (!t || !hhmm(t.time) || !int(t.days, 1, 0x7F) || typeof t.on !== 'boolean') return null;
+    return {enabled: !!t.enabled, time: t.time, days: t.days, on: t.on, b: int(t.b, 1, 100) ? t.b : 60,
+      mode: t.mode === 'color' ? 'color' : 'white', mired: int(t.mired, 153, 454) ? t.mired : 370,
+      h: int(t.h, 0, 254) ? t.h : 0, s: int(t.s, 0, 254) ? t.s : 254, fade: int(t.fade, 0, 63) ? t.fade : 0};
+  }
+  function cleanWake(w) {
+    if (!w || !hhmm(w.time) || !int(w.weekdays, 1, 0x7F)) return null;
+    return {enabled: !!w.enabled, time: w.time, weekdays: w.weekdays, fade: int(w.fade, 0, 63) ? w.fade : 30,
+      brightness: int(w.brightness, 1, 100) ? w.brightness : 100, mired: int(w.mired, 153, 454) ? w.mired : 250,
+      offEnabled: !!w.offEnabled, offTime: hhmm(w.offTime) ? w.offTime : '08:30'};
+  }
+  function collectBackup() {
+    return {v: 1, at: Date.now(), scenes,
+      lamps: LAMPS.map(l => ({id: l.id, name: l.name, timers: storageGet('timers:' + l.id)?.entries || [],
+        wake: storageGet('schedule:' + l.id + ':wake')}))};
+  }
+  $('backup-share').addEventListener('click', () => {
+    const url = location.origin + location.pathname + '#backup=' + encodeJSON(collectBackup());
+    shareLink('Lamp Control backup', url, $('backup-share'), 'backup-link', 'backup-url');
+  });
+  const incomingBackup = (() => {
+    const m = location.hash.match(/^#backup=([A-Za-z0-9_-]+)$/);
+    const b = m && decodeJSON(m[1]);
+    return b && b.v === 1 && Array.isArray(b.lamps) ? b : null;
+  })();
+  function offerRestore() {
+    if (!incomingBackup) return;
+    const known = incomingBackup.lamps.filter(l => LAMPS.some(x => x.id === l.id));
+    $('backup-info').textContent = 'From ' + new Date(incomingBackup.at).toLocaleString() + ': ' +
+      (Array.isArray(incomingBackup.scenes) ? incomingBackup.scenes.length : 0) + ' scene(s), schedules for ' + known.length +
+      ' lamp(s). Replaces those on this device; then save each lamp’s schedules to the lamps.';
+    $('backup-incoming').hidden = false;
+  }
+  $('backup-ignore').addEventListener('click', () => { history.replaceState(null, '', location.pathname); $('backup-incoming').hidden = true; });
+  $('backup-restore').addEventListener('click', () => {
+    const b = incomingBackup;
+    storageSet(SCENES_KEY, (Array.isArray(b.scenes) ? b.scenes : []).map(validScene).filter(Boolean));
+    for (const l of b.lamps) {
+      if (!LAMPS.some(x => x.id === l.id)) continue;
+      const entries = (Array.isArray(l.timers) ? l.timers : []).map(cleanTimer).filter(Boolean).slice(0, TIMER_SLOTS.length);
+      // Marked unsaved: the lamps may hold something else until each list is saved.
+      storageSet('timers:' + l.id, {entries, savedAt: null, dirty: true});
+      const wake = cleanWake(l.wake);
+      if (wake) storageSet('schedule:' + l.id + ':wake', wake); else storageRemove('schedule:' + l.id + ':wake');
+    }
+    history.replaceState(null, '', location.pathname);
+    location.reload();
+  });
+
+  // ---- Readback experiment: do status notifications reach this browser at all?
+  $('readback').addEventListener('click', async () => {
+    const s = MESH.session;
+    if (!s.ready || s.busy) { $('readback-result').textContent = 'Connect the mesh first (and wait until it is idle).'; return; }
+    let count = 0;
+    const kinds = new Map();
+    $('readback-result').textContent = 'Listening for 10 s…';
+    try {
+      if (!MESH.listening) {
+        await s.listen(bytes => {
+          count++; const k = '0x' + (bytes[0] ?? 0).toString(16).padStart(2, '0');
+          kinds.set(k, (kinds.get(k) || 0) + 1);
+          log('Readback: notification type ' + k + ', ' + bytes.length + ' bytes (payload not shown).');
+        });
+        MESH.listening = true;
+      }
+      await s.send('status query (as the app)', key => P.statusQueryPacket(key));
+      await s.send('schedule read, wake-up (7)', key => P.scheduleReadPacket(key, 0, P.ROUTINE.dawn));
+    } catch (error) { reportError(MESH, error, false); }
+    setTimeout(() => {
+      const summary = count ? count + ' notification(s): ' + [...kinds].map(([k, n]) => k + ' ×' + n).join(', ') + '. Readback is possible!'
+        : 'No notifications arrived. This browser does not deliver the lamp’s status messages.';
+      $('readback-result').textContent = summary; log('Readback test: ' + summary);
+    }, 10000);
+  });
 
   $('copy').addEventListener('click', async () => {
     try { await navigator.clipboard.writeText($('log').value); $('copy').textContent = 'Copied'; }
@@ -776,6 +864,7 @@
     syncAll();
     $('scene-new').disabled = !bootOK || !LAMPS.length;
     renderScenes();
+    offerRestore();
   })();
   syncAll();
 })();

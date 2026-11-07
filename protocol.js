@@ -196,6 +196,9 @@
   const clockPacket = (key, unixSeconds, utcOffsetSeconds) => packet(key, clockBlock(unixSeconds, utcOffsetSeconds), 2);
   const schedulePacket = (key, schedule) => packet(key, scheduleBlock(schedule), 2);
   const timezonePacket = (key, unixSeconds, posixTZ) => packet(key, timezoneBlock(unixSeconds, posixTZ), 2);
+  // Read queries as the app sends them (capture): status 0x0a FF FF; schedule read 0x35 addr(LE) routine.
+  const statusQueryPacket = key => packet(key, queryBlock([0x0A, 0xFF, 0xFF]), 2);
+  const scheduleReadPacket = (key, address, routine) => packet(key, queryBlock([0x35, address & 255, address >>> 8, intIn(routine, [1, 127], 'Routine')]), 2);
   async function selfTest() {
     // Public dummy credentials only. Generated independently by upstream Python.
     const n = credentials('meshname'), p = credentials('meshpass');
@@ -262,7 +265,7 @@
     return true;
   }
   const api = {TARGETS, targetOK, RANGE, ROUTINE, PARTS, EXPERIMENT_CLEANUP, hex, credentials, attEncrypt, crc8, pairPacket, sessionKey, powerBlock, brightnessBlock, temperatureBlock,
-    colorBlock, candleBlock, queryBlock, clockBlock, timezoneBlock, scheduleBlock, timezonePacket,
+    colorBlock, candleBlock, queryBlock, clockBlock, timezoneBlock, scheduleBlock, timezonePacket, statusQueryPacket, scheduleReadPacket,
     powerPacket, brightnessPacket, temperaturePacket, colorPacket, candlePacket, clockPacket, schedulePacket, selfTest};
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.AwoxProtocol = api;
