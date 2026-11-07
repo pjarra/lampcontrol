@@ -35,16 +35,18 @@
   const SCHEDULES = [
     {id: 'wake', title: 'Wake-up light', routine: P.ROUTINE.dawn, offRoutine: P.ROUTINE.dawnOff, on: true,
       defaults: {time: '07:00', fade: 30, brightness: 100, mired: 250, offEnabled: false, offTime: '08:30'}},
-    // Evening used program (3) before the capture showed paired routines; it now
-    // uses nightlight (5) + off-part (6), and each save disables program (3).
-    {id: 'evening', title: 'Evening: warm & dim', routine: P.ROUTINE.nightlight, offRoutine: P.ROUTINE.nightlightOff, on: true,
-      replaces: P.ROUTINE.program, defaults: {time: '19:00', fade: 5, brightness: 30, mired: 370, offEnabled: false, offTime: '23:00'}},
-    {id: 'off', title: 'Off', routine: P.ROUTINE.timer, on: false, defaults: {time: '23:00', fade: 1}}
   ];
+  // Generic slots for the free list of switching times: timer (2), program (3) and unused
+  // IDs 4, 9-16 all behave alike, including fades (verified 2026-11-07 on all three lamps).
+  // Nightlight 5/6 held the former "Evening" entry and are cleared on save; 7/8 = wake-up.
+  const TIMER_SLOTS = [2, 3, 4, 9, 10, 11, 12, 13, 14, 15, 16];
+  const RETIRED_SLOTS = [P.ROUTINE.nightlight, P.ROUTINE.nightlightOff];
   // The AwoX app writes 0x0000 as the schedule address for every lamp (capture).
   const SCHEDULE_ADDRESS = 0x0000;
   // Display order Monday first; values are mask bits (bit 0 = Sunday).
   const WEEKDAYS = [['Mo', 1], ['Tu', 2], ['We', 3], ['Th', 4], ['Fr', 5], ['Sa', 6], ['Su', 0]];
+  const dayText = mask => mask === 0x7F ? 'daily' : mask === 0x3E ? 'Mo–Fr' : mask === 0x41 ? 'Sa–Su' :
+    WEEKDAYS.filter(([, bit]) => mask & (1 << bit)).map(([label]) => label).join(' ');
   const SLIDER_KINDS = ['brightness', 'temperature', 'color'];
   function storageGet(key) { try { return JSON.parse(localStorage.getItem(key)); } catch (_) { return null; } }
   function storageSet(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* optional */ } }
@@ -163,7 +165,7 @@
       q('connect').textContent = lamp.device ? 'Pick again' : 'Connect';
       q('disconnect').disabled = !(s.busy || s.device);
       for (const c of ['on', 'off', 'brightness', 'temperature', 'hue', 'saturation']) q(c).disabled = !(direct || viaMesh);
-      q('lab-start').disabled = q('lab-clear').disabled = !(direct || viaMesh);
+      if (lamp.timers) lamp.timers.save.disabled = !(direct || viaMesh);
       for (const sch of lamp.schedules || []) {
         sch.save.disabled = !(direct || viaMesh);
         sch.save.textContent = direct ? 'Save to lamp' : 'Save to lamp (via mesh)';
@@ -232,33 +234,97 @@
     const box = q('schedules');
     lamp.schedules = SCHEDULES.map(def => setupSchedule(lamp, def, box));
 
-    // Experiment: highest usable slot ID. Probes one minute apart alternate the lamp state.
-    // (Earlier: a 3-part program in slot 3 did nothing; unused IDs 4, 9, 10 each worked.)
-    // Probe: ID 16 alone (others cleared), then a free slot with a fade, then off.
-    const PROBE = [
-      {routine: 16, offset: 0, word: 'ON warm', light: {on: true, brightness: 30, mired: 370, fade: 0}},
-      {routine: 11, offset: 1, word: 'ON cold, 2-min fade', light: {on: true, brightness: 100, mired: 153, fade: 2}},
-      {routine: 12, offset: 4, word: 'OFF', light: {on: false, keepLight: true, fade: 0}}];
-    const labSteps = enabled => {
-      const base = new Date(Date.now() + 120000), at = k => new Date(base.getTime() + k * 60000);
-      const steps = enabled ? PROBE : P.EXPERIMENT_CLEANUP.map(routine => ({routine, offset: 0, light: {on: false, keepLight: true, fade: 0}}));
-      return steps.map(st => ({time: at(st.offset), routine: st.routine, word: st.word, schedule: {address: SCHEDULE_ADDRESS,
-        routine: st.routine, enabled, hour: at(st.offset).getHours(), minute: at(st.offset).getMinutes(), weekdays: 0x7F, ...st.light}}));
+    // Switching times: a free list in the generic slots.
+    lamp.timers = setupTimers(lamp, el);
+  }
+
+  function setupTimers(lamp, card) {
+    const box = card.querySelector('.timers'), q = cls => box.querySelector('.' + cls);
+    const key = 'timers:' + lamp.id;
+    const valid = t => t && /^\d\d:\d\d$/.test(t.time) && Number.isInteger(t.days) && t.days >= 1 && t.days <= 0x7F;
+    const stored = storageGet(key);
+    let entries = (Array.isArray(stored?.entries) ? stored.entries : []).filter(valid).slice(0, TIMER_SLOTS.length);
+    let savedAt = stored?.savedAt || null, dirty = !!stored?.dirty;
+    const persist = () => storageSet(key, {entries, savedAt, dirty});
+    const describeTimer = t => t.time + ' · ' + dayText(t.days) + ' · ' + (!t.on ? 'Off' : t.b + ' % ' +
+      (t.mode === 'color' ? 'colour ' + Math.round(t.h * 360 / 254) + '°' : kelvin(t.mired) + ' K')) +
+      (t.fade ? ' · ' + t.fade + ' min fade' : '') + (t.enabled ? '' : ' · inactive');
+    const showState = () => {
+      q('timer-saved').textContent = (entries.length + ' of ' + TIMER_SLOTS.length + ' used. ') +
+        (dirty ? 'Unsaved changes, tap “Save all to lamp”.' : savedAt ? 'Saved to the lamp ' + new Date(savedAt).toLocaleString() + '.' : '');
+      q('timer-add').disabled = entries.length >= TIMER_SLOTS.length;
     };
-    const hm = d => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
-    const runLab = enabled => {
-      const steps = labSteps(enabled);
-      const done = tracker(steps.length, ok => {
-        q('lab-status').textContent = !ok ? 'NOT sent: the connection failed. Connect and start again.' : enabled
-          ? 'All ' + steps.length + ' sent. Watch for: ' + steps.map(s => s.word + ' ' + hm(s.time) + ' (ID ' + s.routine + ')').join(' · ') + '.'
-          : 'Test schedules removed (IDs ' + steps.map(s => s.routine).join(', ') + ' disabled).';
+    const changed = () => { dirty = true; persist(); showState(); };
+    function editor(t, index) {
+      const el = $('timer-template').content.firstElementChild.cloneNode(true), f = cls => el.querySelector('.' + cls);
+      const days = WEEKDAYS.map(([label, bit]) => {
+        const wrap = document.createElement('label'), input = document.createElement('input');
+        input.type = 'checkbox'; input.checked = !!(t.days & (1 << bit)); input.dataset.bit = bit;
+        wrap.append(input, ' ' + label); f('weekdays').append(wrap);
+        return input;
       });
+      f('t-time').value = t.time; f('t-action').value = t.on ? 'on' : 'off'; f('t-fade').value = t.fade;
+      f('t-b').value = t.b; f('t-mode').value = t.mode; f('t-w').value = 607 - t.mired; f('t-h').value = t.h; f('t-s').value = t.s;
+      f('t-enabled').checked = t.enabled;
+      const show = () => {
+        f('t-light').hidden = !t.on; f('t-white').hidden = t.mode !== 'white'; f('t-color').hidden = t.mode !== 'color';
+        f('t-b-out').textContent = t.b + ' %';
+        f('t-w-out').textContent = whitePercent(t.mired) + ' % · ' + kelvin(t.mired) + ' K';
+        f('t-h-out').textContent = Math.round(t.h * 360 / 254) + '°'; f('t-s-out').textContent = Math.round(t.s / 2.54) + ' %';
+        f('timer-summary').textContent = describeTimer(t);
+      };
+      el.addEventListener('input', () => {
+        if (/^\d\d:\d\d$/.test(f('t-time').value)) t.time = f('t-time').value;
+        t.on = f('t-action').value === 'on';
+        const fade = Math.round(Number(f('t-fade').value)); if (fade >= 0 && fade <= 63) t.fade = fade;
+        t.b = Number(f('t-b').value); t.mode = f('t-mode').value; t.mired = 607 - Number(f('t-w').value);
+        t.h = Number(f('t-h').value); t.s = Number(f('t-s').value); t.enabled = f('t-enabled').checked;
+        t.days = days.reduce((m, d) => d.checked ? m | (1 << d.dataset.bit) : m, 0) || t.days;
+        show(); changed();
+      });
+      el.addEventListener('change', () => el.dispatchEvent(new Event('input')));
+      f('t-delete').addEventListener('click', () => { entries.splice(index, 1); render(); changed(); });
+      show();
+      return el;
+    }
+    function render() {
+      q('timer-list').replaceChildren(...entries.map(editor));
+      // Collapsed (summary line only) so the list stays short; a new entry opens itself.
+      for (const d of q('timer-list').children) d.open = false;
+      showState();
+    }
+    q('timer-add').addEventListener('click', () => {
+      if (entries.length >= TIMER_SLOTS.length) return;
+      entries.push({enabled: true, time: '18:00', days: 0x7F, on: true, b: 60, mode: 'white', mired: 370, h: 0, s: 254, fade: 0});
+      dirty = true; render(); persist();
+      q('timer-list').lastElementChild.open = true;
+    });
+    const save = q('timer-save');
+    save.addEventListener('click', () => {
+      const frame = (routine, t) => {
+        const [hour, minute] = t ? t.time.split(':').map(Number) : [0, 0];
+        const base = {address: SCHEDULE_ADDRESS, routine, enabled: !!t && t.enabled, hour, minute, weekdays: t ? t.days : 0x7F, fade: t ? t.fade : 0};
+        if (!t || !t.on) return {...base, on: false, keepLight: true};
+        return {...base, on: true, brightness: t.b, ...(t.mode === 'color' ? {color: [t.h, t.s]} : {mired: t.mired})};
+      };
+      // The whole list, unused slots disabled, plus the retired evening slots.
+      const frames = TIMER_SLOTS.map((routine, i) => frame(routine, entries[i] || null))
+        .concat(RETIRED_SLOTS.map(routine => frame(routine, null)));
+      const snapshot = JSON.stringify(entries);
+      const done = tracker(frames.length, ok => {
+        if (!ok) { $('status').textContent = lamp.name + ': switching times NOT saved (connection failed). Connect and save again.'; return; }
+        if (JSON.stringify(entries) === snapshot) dirty = false;
+        savedAt = Date.now(); persist(); showState();
+        $('status').textContent = lamp.name + ': switching times saved to the lamp.';
+      });
+      queue(lamp, 'timezone', null);
+      queue(lamp, 'clock', null);
       let accepted = true;
-      for (const step of steps) accepted = queue(lamp, 'schedule:' + step.schedule.routine, step.schedule, done) && accepted;
-      q('lab-status').textContent = accepted ? 'Sending… (connecting first if needed)' : 'Not connected. Connect first (top card), then start again.';
-    };
-    q('lab-start').addEventListener('click', () => runLab(true));
-    q('lab-clear').addEventListener('click', () => runLab(false));
+      for (const f of frames) accepted = queue(lamp, 'schedule:' + f.routine, f, done) && accepted;
+      $('status').textContent = accepted ? lamp.name + ': saving ' + frames.length + ' slots…' : lamp.name + ': not connected. Connect first (top card).';
+    });
+    render();
+    return {save};
   }
 
   function setupSchedule(lamp, def, box) {
@@ -356,7 +422,7 @@
     },
     schedule: (s, dest) => (s = dest === CONNECTED ? s : {...s, address: dest}, ['schedule routine ' + s.routine + (s.offPart ? ' (off-part)' : '') + ': ' + (s.enabled ? (s.offPart ? 'OFF' : s.on ? 'ON' : 'OFF') +
       ' at ' + s.hour + ':' + String(s.minute).padStart(2, '0') + ', weekdays 0x' + s.weekdays.toString(16) +
-      (s.offPart ? '' : ', fade ' + s.fade + ' min' + (s.keepLight ? ', light unchanged' : ', ' + s.brightness + ' %, ' + s.mired + ' mired'))
+      (s.offPart ? '' : ', fade ' + s.fade + ' min' + (s.keepLight ? ', light unchanged' : ', ' + s.brightness + ' %, ' + (s.color ? 'colour ' + s.color.join('/') : s.mired + ' mired')))
       : 'disabled') + ', parts 0x' + (s.parts ?? 1).toString(16).padStart(2, '0') + ', address 0x' + s.address.toString(16).padStart(4, '0'),
       key => P.schedulePacket(key, s), s.offPart || (s.parts & 15) ? 100 : undefined]) // like the app: later parts right after the first
   };

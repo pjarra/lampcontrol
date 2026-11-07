@@ -29,3 +29,7 @@ footer{margin:24px 0 8px;color:#5b7168;text-align:center}
 .scene-lamps label{display:flex;gap:8px;align-items:center;margin:0;font-weight:500}
 .scene-lamps input{width:auto;margin:0}
 #scene-url{margin-top:10px}
+input.t-h{background:linear-gradient(90deg,#f00,#ff0 17%,#0f0 33%,#0ff 50%,#00f 67%,#f0f 83%,#f00);border-radius:18px;height:20px;margin:8px 0}
+.timer{border-top:1px solid #e0e7dc;padding:8px 0}
+.timer summary{cursor:pointer;font-weight:600;font-variant-numeric:tabular-nums}
+.timer-list{margin-top:8px}

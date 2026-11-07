@@ -168,10 +168,12 @@
       intIn(s.hour, [0, 23], 'Hour'),
       intIn(s.weekdays, [1, 0x7F], 'Weekdays') | 0x80, // recurring
       intIn(s.fade, [0, 63], 'Fade'),
-      // Lighting mode: white temperature (0), or with keepLight "neither" (2) = leave brightness/colour unchanged.
-      (s.on ? 1 : 0) | (s.keepLight ? 1 << 2 : 0),
+      // Lighting mode: white temperature (0), colour (1: hue, saturation; as in the app's
+      // nightlight capture), or with keepLight "neither" (2) = leave brightness/colour unchanged.
+      (s.on ? 1 : 0) | (s.color ? 1 << 1 : 0) | (s.keepLight ? 1 << 2 : 0),
       s.keepLight ? 0xFF : intIn(s.brightness, [0, 100], 'Schedule brightness'),
-      ...(s.keepLight ? [0xFF, 0xFF] : [intIn(s.mired, RANGE.mired, 'Temperature')].flatMap(m => [m & 255, m >>> 8])),
+      ...(s.keepLight ? [0xFF, 0xFF] : s.color ? s.color.map(v => intIn(v, RANGE.byte, 'Colour'))
+        : [intIn(s.mired, RANGE.mired, 'Temperature')].flatMap(m => [m & 255, m >>> 8])),
       parts
     ];
     return queryBlock([0x33, ...body]);
@@ -237,7 +239,11 @@
       fade: 30, on: true, brightness: 100, mired: 249, parts: PARTS.first}));
     const appOff = hex(scheduleBlock({address: 0, routine: 8, enabled: true, hour: 8, minute: 30, weekdays: 0x3E,
       offPart: true, parts: PARTS.second}));
-    if (appOn !== '260d330000873d06be1e0164f9001000' || appOff !== '1d0d330000887928be00000000001100') {
+    // The app's colour nightlight (blue, on 20:33, capture 2): mode 03, hue/saturation in the last bytes.
+    const appColour = hex(scheduleBlock({address: 0, routine: 5, enabled: true, hour: 20, minute: 33, weekdays: 0x7F,
+      fade: 0, on: true, brightness: 50, color: [0xA1, 0xFE], parts: PARTS.first}));
+    if (appOn !== '260d330000873d06be1e0164f9001000' || appOff !== '1d0d330000887928be00000000001100' ||
+        appColour !== '770d330000858514ff000332a1fe1000') {
       throw new Error('Schedule pair self-test failed');
     }
     // The app's time-zone frame (capture), plaintext and encrypted with the dummy key.

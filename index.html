@@ -53,14 +53,43 @@
       <details class="sub"><summary>Schedules</summary>
         <p class="small">Stored in the lamp; they run with the phone off. Saving also sets the lamp clock. The lamp cannot report what is stored, so this shows what this browser last saved.</p>
         <div class="schedules"></div>
-        <div class="schedule lab">
-          <h3>Experiment: slot 16 and fades</h3>
-          <p class="small">Switch the lamp OFF, then start. +2 min: ID 16 ON warm 30 % · +3 min: ID 11 ON cold 100 % with a 2-minute fade (sudden or gradual?) · +6 min: ID 12 OFF. “Remove” clears all experimental slots.</p>
-          <div class="actions"><button class="lab-start" disabled>Start test</button><button class="lab-clear secondary compact" disabled>Remove test schedules</button></div>
-          <p class="small lab-status"></p>
+        <div class="schedule timers">
+          <h3>Switching times</h3>
+          <p class="small">Up to 11 per lamp, any mix of on (brightness, white or colour, fade) and off. “Save all” writes the whole list to the lamp and clears unused slots, so edit a lamp’s list from one device.</p>
+          <div class="timer-list"></div>
+          <div class="actions"><button class="timer-add secondary compact">Add switching time</button><button class="timer-save" disabled>Save all to lamp</button></div>
+          <p class="small timer-saved"></p>
         </div>
       </details>
     </section>
+  </template>
+  <template id="timer-template">
+    <details class="timer" open>
+      <summary class="timer-summary"></summary>
+      <div class="row3">
+        <label>Time <input class="t-time" type="time"></label>
+        <label>Action <select class="t-action"><option value="on">On</option><option value="off">Off</option></select></label>
+        <label>Fade (min) <input class="t-fade" type="number" min="0" max="63"></label>
+      </div>
+      <div class="t-light">
+        <label>Brightness <output class="t-b-out"></output></label>
+        <input class="t-b" type="range" min="1" max="100">
+        <label>Light <select class="t-mode"><option value="white">White</option><option value="color">Colour</option></select></label>
+        <div class="t-white">
+          <label>White <output class="t-w-out"></output></label>
+          <input class="t-w" type="range" min="153" max="454">
+          <div class="scale small"><span>warm</span><span>cold</span></div>
+        </div>
+        <div class="t-color">
+          <label>Colour <output class="t-h-out"></output></label>
+          <input class="t-h" type="range" min="0" max="254">
+          <label>Saturation <output class="t-s-out"></output></label>
+          <input class="t-s" type="range" min="0" max="254">
+        </div>
+      </div>
+      <div class="weekdays"></div>
+      <div class="actions"><label class="switch"><input type="checkbox" class="t-enabled"> Active</label><button class="t-delete secondary compact">Delete</button></div>
+    </details>
   </template>
   <template id="schedule-template">
     <div class="schedule">
