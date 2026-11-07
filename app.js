@@ -36,10 +36,20 @@
     {id: 'wake', title: 'Wake-up light', routine: P.ROUTINE.dawn, offRoutine: P.ROUTINE.dawnOff, on: true,
       defaults: {time: '07:00', fade: 30, brightness: 100, mired: 250, offEnabled: false, offTime: '08:30'}},
   ];
-  // Generic slots for the free list of switching times: timer (2), program (3) and unused
-  // IDs 4, 9-16 all behave alike, including fades (verified 2026-11-07 on all three lamps).
+  // Generic slots for the free list of switching times: program (3) and unused IDs 4, 9-16
+  // behave alike, including fades (verified 2026-11-07 on all three lamps). Timer (2) only
+  // ever switched OFF (an ON entry in it was skipped), so it takes one Off entry at most.
   // Nightlight 5/6 held the former "Evening" entry and are cleared on save; 7/8 = wake-up.
   const TIMER_SLOTS = [2, 3, 4, 9, 10, 11, 12, 13, 14, 15, 16];
+  const OFF_ONLY_SLOT = 2;
+  // Slot per entry: the first Off entry gets the off-only slot, everything else the rest in order.
+  function assignSlots(entries) {
+    const firstOff = entries.findIndex(t => !t.on);
+    const free = TIMER_SLOTS.filter(s => s !== OFF_ONLY_SLOT);
+    const slots = entries.map((t, i) => i === firstOff ? OFF_ONLY_SLOT : free.shift());
+    return slots.every(s => s !== undefined) ? slots : null; // null: too many On entries
+  }
+  const timerCapacity = entries => TIMER_SLOTS.length - (entries.some(t => !t.on) ? 0 : 1);
   const RETIRED_SLOTS = [P.ROUTINE.nightlight, P.ROUTINE.nightlightOff];
   // The AwoX app writes 0x0000 as the schedule address for every lamp (capture).
   const SCHEDULE_ADDRESS = 0x0000;
@@ -250,9 +260,10 @@
       (t.mode === 'color' ? 'colour ' + Math.round(t.h * 360 / 254) + '°' : kelvin(t.mired) + ' K')) +
       (t.fade ? ' · ' + t.fade + ' min fade' : '') + (t.enabled ? '' : ' · inactive');
     const showState = () => {
-      q('timer-saved').textContent = (entries.length + ' of ' + TIMER_SLOTS.length + ' used. ') +
+      q('timer-saved').textContent = (entries.length + ' of ' + timerCapacity(entries) + ' used. ') +
         (dirty ? 'Unsaved changes, tap “Save all to lamp”.' : savedAt ? 'Saved to the lamp ' + new Date(savedAt).toLocaleString() + '.' : '');
       q('timer-add').disabled = entries.length >= TIMER_SLOTS.length;
+      q('timer-save').title = assignSlots(entries) ? '' : 'Too many On entries: at most ' + (TIMER_SLOTS.length - 1) + '.';
     };
     const changed = () => { dirty = true; persist(); showState(); };
     function editor(t, index) {
@@ -308,7 +319,10 @@
         return {...base, on: true, brightness: t.b, ...(t.mode === 'color' ? {color: [t.h, t.s]} : {mired: t.mired})};
       };
       // The whole list, unused slots disabled, plus the retired evening slots.
-      const frames = TIMER_SLOTS.map((routine, i) => frame(routine, entries[i] || null))
+      const slots = assignSlots(entries);
+      if (!slots) { $('status').textContent = lamp.name + ': at most ' + (TIMER_SLOTS.length - 1) + ' On entries; delete one or make it Off.'; return; }
+      const bySlot = new Map(slots.map((slot, i) => [slot, entries[i]]));
+      const frames = TIMER_SLOTS.map(routine => frame(routine, bySlot.get(routine) || null))
         .concat(RETIRED_SLOTS.map(routine => frame(routine, null)));
       const snapshot = JSON.stringify(entries);
       const done = tracker(frames.length, ok => {
