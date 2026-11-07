@@ -9,6 +9,10 @@
   // in Bluefy: it cannot filter by advertisement data, and all lamps share a name.
   const CONNECTED = P.TARGETS.connected;
   const MESH_KINDS = new Set(['power', 'brightness', 'temperature', 'color']);
+  // Experimental: schedule frames through the mesh, with the target lamp's mesh address
+  // in the schedule body (the app uses 0x0000 over a direct connection). Clock and time
+  // zone frames carry no address and stay direct-only; the lamps keep their clock.
+  const MESH_ROUTABLE = new Set([...MESH_KINDS, 'schedule']);
   const MESH = {name: 'Mesh', device: null, pending: new Map()};
   // Lamps come from lamps.json (written by tools/scan-lamps.swift). All lamps
   // advertise the same name, so the picker filters on manufacturer data
@@ -158,7 +162,10 @@
       q('connect').textContent = lamp.device ? 'Pick again' : 'Connect';
       q('disconnect').disabled = !(s.busy || s.device);
       for (const c of ['on', 'off', 'brightness', 'temperature', 'hue', 'saturation']) q(c).disabled = !(direct || viaMesh);
-      for (const sch of lamp.schedules || []) sch.save.disabled = !direct;
+      for (const sch of lamp.schedules || []) {
+        sch.save.disabled = !(direct || viaMesh);
+        sch.save.textContent = direct ? 'Save to lamp' : 'Save via mesh (experimental)';
+      }
       q('badge').textContent = s.busy && !s.ready ? 'Connecting…' : s.ready ? 'Connected' :
         MESH.session?.ready && lamp.meshOK ? 'Via mesh' : lamp.device || viaMesh ? 'Ready' :
         lamp.meshOK ? 'Not set up' : 'Needs own connection';
@@ -307,17 +314,17 @@
       const now = Math.floor(Date.now() / 1000), offset = -new Date().getTimezoneOffset() * 60;
       return ['clock (UTC offset ' + offset / 3600 + ' h)', key => P.clockPacket(key, now, offset)];
     },
-    schedule: s => ['schedule routine ' + s.routine + (s.offPart ? ' (off-part)' : '') + ': ' + (s.enabled ? (s.offPart ? 'OFF' : s.on ? 'ON' : 'OFF') +
+    schedule: (s, dest) => (s = dest === CONNECTED ? s : {...s, address: dest}, ['schedule routine ' + s.routine + (s.offPart ? ' (off-part)' : '') + ': ' + (s.enabled ? (s.offPart ? 'OFF' : s.on ? 'ON' : 'OFF') +
       ' at ' + s.hour + ':' + String(s.minute).padStart(2, '0') + ', weekdays 0x' + s.weekdays.toString(16) +
       (s.offPart ? '' : ', fade ' + s.fade + ' min' + (s.keepLight ? ', light unchanged' : ', ' + s.brightness + ' %, ' + s.mired + ' mired'))
-      : 'disabled') + ', parts 0x' + (s.parts ?? 1).toString(16).padStart(2, '0'), key => P.schedulePacket(key, s),
-      s.offPart ? 100 : undefined] // like the app: off-part right after its on-part
+      : 'disabled') + ', parts 0x' + (s.parts ?? 1).toString(16).padStart(2, '0') + ', address 0x' + s.address.toString(16).padStart(4, '0'),
+      key => P.schedulePacket(key, s), s.offPart ? 100 : undefined]) // like the app: off-part right after its on-part
   };
   // Coalesce: slider drags replace the pending value, so only the newest is sent.
   // Route for a lamp's next command: own connection, else the mesh (control commands only).
   function route(lamp, kind) {
     if (lamp.session.ready) return {session: lamp.session, dest: CONNECTED, label: lamp.name};
-    if (MESH_KINDS.has(kind.split(':')[0]) && lamp.meshOK && MESH.session.ready) {
+    if (MESH_ROUTABLE.has(kind.split(':')[0]) && lamp.meshOK && MESH.session.ready) {
       return {session: MESH.session, dest: lamp.meshAddress, label: lamp.name + ' via mesh'};
     }
     return null;
@@ -327,7 +334,7 @@
     if (!route(lamp, kind)) {
       // Not connected: keep the command and connect in the background (no picker needed
       // for a known device); it is sent once logged in.
-      const meshCapable = MESH_KINDS.has(kind.split(':')[0]) && lamp.meshOK;
+      const meshCapable = MESH_ROUTABLE.has(kind.split(':')[0]) && lamp.meshOK;
       if (lamp.device) { if (!lamp.session.busy) lamp.reconnect(); }
       else if (meshCapable && MESH.device) { if (!MESH.session.busy) MESH.reconnect(); }
       else if (!(meshCapable && MESH.session.busy) && !lamp.session.busy) return;
