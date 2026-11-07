@@ -9,9 +9,9 @@
   // in Bluefy: it cannot filter by advertisement data, and all lamps share a name.
   const CONNECTED = P.TARGETS.connected;
   const MESH_KINDS = new Set(['power', 'brightness', 'temperature', 'color']);
-  // Experimental: schedule frames through the mesh, with the target lamp's mesh address
-  // in the schedule body (the app uses 0x0000 over a direct connection). Clock and time
-  // zone frames carry no address and stay direct-only; the lamps keep their clock.
+  // Schedule frames also work through the mesh, with the target lamp's mesh address in
+  // the schedule body (verified 2026-11-07; the app uses 0x0000 over a direct connection).
+  // Clock and time zone frames carry no address and stay direct-only.
   const MESH_ROUTABLE = new Set([...MESH_KINDS, 'schedule']);
   const MESH = {name: 'Mesh', device: null, pending: new Map()};
   // Lamps come from lamps.json (written by tools/scan-lamps.swift). All lamps
@@ -164,7 +164,7 @@
       for (const c of ['on', 'off', 'brightness', 'temperature', 'hue', 'saturation']) q(c).disabled = !(direct || viaMesh);
       for (const sch of lamp.schedules || []) {
         sch.save.disabled = !(direct || viaMesh);
-        sch.save.textContent = direct ? 'Save to lamp' : 'Save via mesh (experimental)';
+        sch.save.textContent = direct ? 'Save to lamp' : 'Save to lamp (via mesh)';
       }
       q('badge').textContent = s.busy && !s.ready ? 'Connecting…' : s.ready ? 'Connected' :
         MESH.session?.ready && lamp.meshOK ? 'Via mesh' : lamp.device || viaMesh ? 'Ready' :
