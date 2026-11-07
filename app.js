@@ -153,6 +153,7 @@
     $('lamps').append(el);
     lamp.el = el;
     lamp.pending = new Map(); // latest unsent value per control
+    lamp.waiters = new Map(); // kind -> callback(sent: boolean), for commands whose delivery is reported
     // lamp.device: the BluetoothDevice picked once (or restored via getDevices()). With it,
     // tapping a control connects and logs in automatically; no picker needed.
     lamp.sync = () => {
@@ -176,7 +177,7 @@
     });
     const connect = (request, known = null) => {
       const creds = readCredentials();
-      if (!creds) { lamp.pending.clear(); $('credentials').open = true; return; }
+      if (!creds) { dropPending(lamp); $('credentials').open = true; return; }
       $('status').textContent = known ? 'Connecting to ' + lamp.name + '…' : 'Choose ' + lamp.name + ' in the Bluetooth picker…';
       lamp.session.connect(creds[0], creds[1], request, known)
         .then(() => {
@@ -190,7 +191,7 @@
           queue(lamp, 'timezone', null);
           queue(lamp, 'clock', null);
         })
-        .catch(error => { lamp.pending.clear(); reportError(lamp, error); });
+        .catch(error => { dropPending(lamp); reportError(lamp, error); });
     };
     lamp.reconnect = () => { if (lamp.device && !lamp.session.busy && !lamp.session.device) connect(null, lamp.device); };
     q('connect').addEventListener('click', () => connect(pickerFilter(lamp.adPrefix)));
@@ -236,10 +237,14 @@
     const hm = d => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     const runLab = enabled => {
       const steps = labSteps(enabled);
-      for (const step of steps) queue(lamp, 'schedule:' + step.schedule.routine, step.schedule);
-      q('lab-status').textContent = enabled
-        ? 'Sent. Watch for: ON warm ' + hm(steps[0].time) + ' (ID 4) · OFF ' + hm(steps[1].time) + ' (ID 9) · ON bright ' + hm(steps[2].time) + ' (ID 10).'
-        : 'Test schedules removed (IDs 4, 9, 10 disabled).';
+      const done = tracker(steps.length, ok => {
+        q('lab-status').textContent = !ok ? 'NOT sent: the connection failed. Connect and start again.' : enabled
+          ? 'All 3 sent. Watch for: ON warm ' + hm(steps[0].time) + ' (ID 4) · OFF ' + hm(steps[1].time) + ' (ID 9) · ON bright ' + hm(steps[2].time) + ' (ID 10).'
+          : 'Test schedules removed (IDs 4, 9, 10 disabled).';
+      });
+      let accepted = true;
+      for (const step of steps) accepted = queue(lamp, 'schedule:' + step.schedule.routine, step.schedule, done) && accepted;
+      q('lab-status').textContent = accepted ? 'Sending… (connecting first if needed)' : 'Not connected. Connect first (top card), then start again.';
     };
     q('lab-start').addEventListener('click', () => runLab(true));
     q('lab-clear').addEventListener('click', () => runLab(false));
@@ -305,17 +310,21 @@
         record.mired = 607 - Number(q('sch-mired').value);
         Object.assign(schedule, {brightness: record.brightness, mired: record.mired});
       } else schedule.keepLight = true;
+      const frames = [['schedule:' + def.routine, schedule]];
+      if (offPart) frames.push(['schedule:' + def.offRoutine, offPart]);
+      if (def.replaces) frames.push(['schedule:' + def.replaces, {address: SCHEDULE_ADDRESS, routine: def.replaces, enabled: false,
+        hour, minute, weekdays: 0x7F, fade: 0, on: false, keepLight: true}]);
+      const done = tracker(frames.length, ok => {
+        if (!ok) { $('status').textContent = lamp.name + ': ' + def.title + ' NOT sent (connection failed). Connect and save again.'; return; }
+        record.sentAt = Date.now();
+        storageSet(storeKey, record); showSaved(record);
+        $('status').textContent = lamp.name + ': ' + def.title + ' sent to the lamp.';
+      });
       queue(lamp, 'timezone', null);
       queue(lamp, 'clock', null);
-      queue(lamp, 'schedule:' + def.routine, schedule);
-      if (offPart) queue(lamp, 'schedule:' + def.offRoutine, offPart);
-      if (def.replaces) {
-        queue(lamp, 'schedule:' + def.replaces, {address: SCHEDULE_ADDRESS, routine: def.replaces, enabled: false, hour, minute,
-          weekdays: 0x7F, fade: 0, on: false, keepLight: true});
-      }
-      record.sentAt = Date.now();
-      storageSet(storeKey, record); showSaved(record);
-      $('status').textContent = lamp.name + ': ' + def.title + ' sent.';
+      let accepted = true;
+      for (const [kind, frame] of frames) accepted = queue(lamp, kind, frame, done) && accepted;
+      $('status').textContent = accepted ? lamp.name + ': sending ' + def.title + '…' : lamp.name + ': not connected. Connect first (top card).';
     });
     box.append(el);
     return {save};
@@ -349,15 +358,17 @@
     }
     return null;
   }
-  function queue(lamp, kind, value) {
-    if (!bootOK) return;
+  // Returns false if the command cannot be sent (no connection and none known).
+  // onDone(sent) reports actual delivery, so the UI never claims "sent" too early.
+  function queue(lamp, kind, value, onDone) {
+    if (!bootOK) return false;
     if (!route(lamp, kind)) {
       // Not connected: keep the command and connect in the background (no picker needed
       // for a known device); it is sent once logged in.
       const meshCapable = MESH_ROUTABLE.has(kind.split(':')[0]) && lamp.meshOK;
       if (lamp.device) { if (!lamp.session.busy) lamp.reconnect(); }
       else if (meshCapable && MESH.device) { if (!MESH.session.busy) MESH.reconnect(); }
-      else if (!(meshCapable && MESH.session.busy) && !lamp.session.busy) return;
+      else if (!(meshCapable && MESH.session.busy) && !lamp.session.busy) return false;
     }
     // What the page last set, for "Save current as scene" (lamps cannot be read back).
     if (kind === 'power') lamp.state.on = value;
@@ -370,7 +381,23 @@
     if (kind === 'color') lamp.pending.delete('temperature');
     lamp.pending.delete(kind); // re-insert so it is sent after earlier pending kinds
     lamp.pending.set(kind, value);
+    if (onDone) { lamp.waiters.get(kind)?.(false); lamp.waiters.set(kind, onDone); }
     pump(lamp);
+    return true;
+  }
+  function settle(lamp, kind, sent) {
+    const done = lamp.waiters.get(kind);
+    lamp.waiters.delete(kind);
+    if (done) done(sent);
+  }
+  function dropPending(lamp) {
+    for (const kind of [...lamp.waiters.keys()]) settle(lamp, kind, false);
+    lamp.pending.clear();
+  }
+  // Collects the delivery results of n commands; onAll(true) only if all were sent.
+  function tracker(n, onAll) {
+    let left = n, ok = true;
+    return sent => { ok = ok && sent; if (--left === 0) onAll(ok); };
   }
   async function pump(lamp) {
     if (!lamp.pending.size) return;
@@ -379,11 +406,13 @@
     if (!r || r.session.busy) return; // sent when a connection becomes ready or free
     lamp.pending.delete(kind);
     const command = COMMANDS[kind.split(':')[0]](value, r.dest);
-    if (!command) { pump(lamp); return; } // e.g. no time zone rule for this zone
+    if (!command) { settle(lamp, kind, true); pump(lamp); return; } // e.g. no time zone rule for this zone
     const [description, build, gap] = command;
     lamp.lastActivity = MESH.lastActivity = Date.now();
-    try { await r.session.send(description + (r.dest === CONNECTED ? '' : ' to ' + r.label), build, gap); }
-    catch (error) { reportError(r.session === MESH.session ? MESH : lamp, error); }
+    try {
+      await r.session.send(description + (r.dest === CONNECTED ? '' : ' to ' + r.label), build, gap);
+      settle(lamp, kind, true);
+    } catch (error) { settle(lamp, kind, false); reportError(r.session === MESH.session ? MESH : lamp, error); }
   }
   function pumpAll() { for (const lamp of LAMPS) pump(lamp); }
 
@@ -407,7 +436,7 @@
   });
   function connectMesh(request, known = null) {
     const creds = readCredentials();
-    if (!creds) { for (const l of LAMPS) l.pending.clear(); $('credentials').open = true; return; }
+    if (!creds) { for (const l of LAMPS) dropPending(l); $('credentials').open = true; return; }
     $('status').textContent = known ? 'Connecting to the mesh…' : 'Choose any lamp in the Bluetooth picker…';
     MESH.session.connect(creds[0], creds[1], request, known)
       .then(() => {
@@ -417,7 +446,7 @@
         $('status').textContent = 'Mesh connected: lamps with a mesh address are controlled through it.';
         syncAll();
       })
-      .catch(error => { for (const l of LAMPS) if (!l.session.ready) l.pending.clear(); reportError(MESH, error); });
+      .catch(error => { for (const l of LAMPS) if (!l.session.ready) dropPending(l); reportError(MESH, error); });
   }
   MESH.reconnect = () => { if (MESH.device && !MESH.session.busy && !MESH.session.device) connectMesh(null, MESH.device); };
   $('mesh-connect').addEventListener('click', () => {
