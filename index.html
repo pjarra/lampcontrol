@@ -69,8 +69,9 @@
       <div class="row3">
         <label>Time <input class="t-time" type="time"></label>
         <label>Action <select class="t-action"><option value="on">On</option><option value="off">Off</option></select></label>
-        <label>Fade (min) <input class="t-fade" type="number" min="0" max="63"></label>
+        <label class="t-fade-label">Fade (min) <input class="t-fade" type="number" min="0" max="63"></label>
       </div>
+      <p class="small t-off-hint">Off switches at once (the lamp ignores a fade here). To dim out, add an On entry with low brightness and a fade before it.</p>
       <div class="t-light">
         <label>Brightness <output class="t-b-out"></output></label>
         <input class="t-b" type="range" min="1" max="100">

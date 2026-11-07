@@ -258,7 +258,7 @@
     const persist = () => storageSet(key, {entries, savedAt, dirty});
     const describeTimer = t => t.time + ' · ' + dayText(t.days) + ' · ' + (!t.on ? 'Off' : t.b + ' % ' +
       (t.mode === 'color' ? 'colour ' + Math.round(t.h * 360 / 254) + '°' : kelvin(t.mired) + ' K')) +
-      (t.fade ? ' · ' + t.fade + ' min fade' : '') + (t.enabled ? '' : ' · inactive');
+      (t.on && t.fade ? ' · ' + t.fade + ' min fade' : '') + (t.enabled ? '' : ' · inactive');
     const showState = () => {
       q('timer-saved').textContent = (entries.length + ' of ' + timerCapacity(entries) + ' used. ') +
         (dirty ? 'Unsaved changes, tap “Save all to lamp”.' : savedAt ? 'Saved to the lamp ' + new Date(savedAt).toLocaleString() + '.' : '');
@@ -278,7 +278,8 @@
       f('t-b').value = t.b; f('t-mode').value = t.mode; f('t-w').value = 607 - t.mired; f('t-h').value = t.h; f('t-s').value = t.s;
       f('t-enabled').checked = t.enabled;
       const show = () => {
-        f('t-light').hidden = !t.on; f('t-white').hidden = t.mode !== 'white'; f('t-color').hidden = t.mode !== 'color';
+        f('t-light').hidden = f('t-fade-label').hidden = !t.on; f('t-off-hint').hidden = t.on;
+        f('t-white').hidden = t.mode !== 'white'; f('t-color').hidden = t.mode !== 'color';
         f('t-b-out').textContent = t.b + ' %';
         f('t-w-out').textContent = whitePercent(t.mired) + ' % · ' + kelvin(t.mired) + ' K';
         f('t-h-out').textContent = Math.round(t.h * 360 / 254) + '°'; f('t-s-out').textContent = Math.round(t.s / 2.54) + ' %';
@@ -314,7 +315,9 @@
     save.addEventListener('click', () => {
       const frame = (routine, t) => {
         const [hour, minute] = t ? t.time.split(':').map(Number) : [0, 0];
-        const base = {address: SCHEDULE_ADDRESS, routine, enabled: !!t && t.enabled, hour, minute, weekdays: t ? t.days : 0x7F, fade: t ? t.fade : 0};
+        // Off ignores fades on hardware (2026-11-07), so it is always sent without one.
+        const base = {address: SCHEDULE_ADDRESS, routine, enabled: !!t && t.enabled, hour, minute, weekdays: t ? t.days : 0x7F,
+          fade: t && t.on ? t.fade : 0};
         if (!t || !t.on) return {...base, on: false, keepLight: true};
         return {...base, on: true, brightness: t.b, ...(t.mode === 'color' ? {color: [t.h, t.s]} : {mired: t.mired})};
       };
