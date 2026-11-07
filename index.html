@@ -128,7 +128,10 @@
       <div id="scene-lamps" class="scene-lamps"></div>
       <div class="actions"><button id="scene-save">Save scene</button><button id="scene-cancel" class="secondary compact">Cancel</button></div>
     </div>
-    <input id="scene-url" class="small" readonly hidden aria-label="Scene link">
+    <div id="scene-link" hidden>
+      <label for="scene-url">Link to this scene: copy it, open it on another device, or keep it as a bookmark</label>
+      <input id="scene-url" type="text" readonly>
+    </div>
   </section>
 
   <div id="lamps"></div>

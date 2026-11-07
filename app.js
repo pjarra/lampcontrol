@@ -628,12 +628,19 @@
       const apply = document.createElement('button'); apply.className = 'scene-apply'; apply.textContent = scene.name;
       apply.title = scene.lamps.map(l => (l.name || l.id) + ': ' + describe(l)).join('\n');
       apply.addEventListener('click', () => applyScene(scene));
+      // Link: the whole scene in a URL, to open it on another device or keep it as a
+      // home-screen bookmark. Share sheet where available; closing it simply cancels.
       const link = document.createElement('button'); link.className = 'secondary compact'; link.textContent = 'Link';
+      link.title = 'Share this scene as a link (another device, or a home-screen bookmark)';
       link.addEventListener('click', async () => {
         const url = sceneURL(scene);
-        try { if (navigator.share) { await navigator.share({title: scene.name, url}); return; } } catch (_) { /* cancelled: fall back */ }
+        $('scene-link').hidden = true;
+        if (navigator.share) {
+          try { await navigator.share({title: 'Scene: ' + scene.name, url}); return; }
+          catch (error) { if (error?.name === 'AbortError') return; /* other failures: fall back */ }
+        }
         try { await navigator.clipboard.writeText(url); link.textContent = 'Copied'; setTimeout(() => { link.textContent = 'Link'; }, 2000); }
-        catch (_) { $('scene-url').hidden = false; $('scene-url').value = url; $('scene-url').select(); }
+        catch (_) { $('scene-link').hidden = false; $('scene-url').value = url; $('scene-url').select(); }
       });
       const del = document.createElement('button'); del.className = 'secondary compact'; del.textContent = 'Delete';
       del.addEventListener('click', () => {
