@@ -36,7 +36,8 @@ Settings files stay out of git (`.gitignore`). `tools/readback.swift` is the raw
 
 ## After a power loss: set the clocks
 
-A lamp loses its clock when it loses power, and its schedules then stop firing. The clock is only
+A lamp most likely loses its clock when it loses power (not yet verified), and its schedules then
+fire at the wrong time or not at all. The clock is only
 set over a direct connection (the frames carry no lamp address, so the mesh does not pass them on).
 Either connect each lamp once via *Own connection* in the page, or on the Mac:
 
