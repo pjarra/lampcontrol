@@ -131,6 +131,8 @@ func loadLamps(_ path: String) -> [LampInfo] {
 
 // ---- Bluetooth session -------------------------------------------------------------------------
 let readSlots = [2, 3, 4, 5, 6, 7, 8] + Array(9...16)
+/// IDs written by the slot-limit experiment (never fired, maybe still stored); read once and reported.
+let leftoverSlots = [32, 64, 127]
 
 final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var central: CBCentralManager!
@@ -188,7 +190,7 @@ final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             requestMissing()
         } else if ch.uuid == statusUUID, let key = key, v.count >= 17 {
             let b = aes(key, Array(v[1...16]), encrypt: false), from = Int(b[0]) | Int(b[1]) << 8
-            if v[0] == 0x35 { let s = Slot(b: b); if readSlots.contains(s.routine) { slots[from, default: [:]][s.routine] = s } }
+            if v[0] == 0x35 { let s = Slot(b: b); if readSlots.contains(s.routine) || leftoverSlots.contains(s.routine) { slots[from, default: [:]][s.routine] = s } }
             else if v[0] == 0x80 || v[0] == 0x82 || v[0] == 0x01 { power[from] = b[12] & 1 == 1 }
         }
     }
@@ -198,7 +200,7 @@ final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         round += 1
         queue = [[0x0A, 0xFF, 0xFF]]
         for lamp in lamps where lamp.address != 0 || lamp.id == connectedId {
-            for r in readSlots where slots[lamp.address]?[r] == nil {
+            for r in readSlots + (round == 1 ? leftoverSlots : []) where slots[lamp.address]?[r] == nil {
                 let a = address(lamp); queue.append([0x35, UInt8(a & 255), UInt8(a >> 8), UInt8(r)])
             }
         }
@@ -221,7 +223,8 @@ final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         for lamp in lamps {
             let s = slots[lamp.address] ?? [:]
             let state = power[lamp.address].map { $0 ? "on" : "off" } ?? "unknown"
-            print("\(lamp.name): \(s.count)/\(readSlots.count) slots read, currently \(state)")
+            print("\(lamp.name): \(readSlots.filter { s[$0] != nil }.count)/\(readSlots.count) slots read, currently \(state)")
+            for r in leftoverSlots { if let x = s[r], !x.cleared { print("  WARNING: experiment slot \(r) still holds \(x.enabled ? "an ACTIVE" : "an inactive") \(x.entry.action) at \(x.time) \(daysText(x.days))") } }
             var wake: Wakeup? = nil
             if let w = s[7], !w.cleared {
                 let off = s[8].flatMap { $0.enabled ? $0.time : nil }
