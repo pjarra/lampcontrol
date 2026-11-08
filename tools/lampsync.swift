@@ -200,14 +200,14 @@ final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         round += 1
         queue = [[0x0A, 0xFF, 0xFF]]
         for lamp in lamps where lamp.address != 0 || lamp.id == connectedId {
-            for r in readSlots + (round == 1 ? leftoverSlots : []) where slots[lamp.address]?[r] == nil {
+            for r in readSlots + leftoverSlots where slots[lamp.address]?[r] == nil {
                 let a = address(lamp); queue.append([0x35, UInt8(a & 255), UInt8(a >> 8), UInt8(r)])
             }
         }
         let wait = Double(queue.count) * 0.4 + 3
         if let p = peripheral { sendNext(p) }
         DispatchQueue.main.asyncAfter(deadline: .now() + wait) {
-            let missing = self.lamps.reduce(0) { n, l in n + readSlots.filter { self.slots[l.address]?[$0] == nil }.count }
+            let missing = self.lamps.reduce(0) { n, l in n + (readSlots + leftoverSlots).filter { self.slots[l.address]?[$0] == nil }.count }
             if missing > 0 && self.round < 3 { print("  \(missing) slot(s) not answered yet, asking again…"); self.requestMissing() }
             else { self.write(); if let p = self.peripheral { self.central.cancelPeripheralConnection(p) }; exit(0) }
         }
@@ -224,7 +224,11 @@ final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             let s = slots[lamp.address] ?? [:]
             let state = power[lamp.address].map { $0 ? "on" : "off" } ?? "unknown"
             print("\(lamp.name): \(readSlots.filter { s[$0] != nil }.count)/\(readSlots.count) slots read, currently \(state)")
-            for r in leftoverSlots { if let x = s[r], !x.cleared { print("  WARNING: experiment slot \(r) still holds \(x.enabled ? "an ACTIVE" : "an inactive") \(x.entry.action) at \(x.time) \(daysText(x.days))") } }
+            for r in leftoverSlots {
+                guard let x = s[r] else { print("  experiment slot \(r): no answer"); continue }
+                if !x.cleared { print("  WARNING: experiment slot \(r) still holds \(x.enabled ? "an ACTIVE" : "an inactive") \(x.entry.action)"
+                    + (x.on ? " \(x.entry.brightness ?? 0) %" + (x.entry.white.map { " \($0) K" } ?? "") : "") + " at \(x.time) \(daysText(x.days))") }
+            }
             var wake: Wakeup? = nil
             if let w = s[7], !w.cleared {
                 let off = s[8].flatMap { $0.enabled ? $0.time : nil }
