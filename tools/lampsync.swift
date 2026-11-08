@@ -2,6 +2,11 @@
 //
 //   swift tools/lampsync.swift [--via lamp-name] [--out lampcontrol-settings.json] [--lamps lamps.json]
 //
+//   swift tools/lampsync.swift --set-clock [--lamps lamps.json]
+//
+// --set-clock connects to each lamp in turn and sets its clock and time-zone rule from this Mac
+// (the same two frames the AwoX app and the web page send). Needed after a power loss: these
+// frames carry no lamp address, so the mesh does not pass them on. Nothing else is written.
 // --via connects through that lamp (name or id from lamps.json); default: the first one seen.
 // The file is only written when every lamp answered for every slot.
 //
@@ -41,11 +46,37 @@ func queryPacket(_ key: [UInt8], _ payload: [UInt8]) -> [UInt8] {
     let fields = [UInt8(payload.count)] + payload
     return [0x02] + aes(key, [crc8(fields)] + fields, encrypt: true)
 }
+/// Query frame of any length: [CRC][len][payload], padded to 16; first 16 bytes encrypted, the tail in the clear.
+func queryFrame(_ key: [UInt8], _ payload: [UInt8]) -> [UInt8] {
+    let fields = [UInt8(payload.count)] + payload
+    var block = [crc8(fields)] + fields
+    if block.count < 16 { block += [UInt8](repeating: 0, count: 16 - block.count) }
+    return [0x02] + aes(key, Array(block.prefix(16)), encrypt: true) + Array(block.dropFirst(16))
+}
+func le32(_ v: UInt32) -> [UInt8] { [UInt8(v & 255), UInt8(v >> 8 & 255), UInt8(v >> 16 & 255), UInt8(v >> 24)] }
+let epoch2000 = 946_684_800
+func clockPayload(unix: Int, offset: Int) -> [UInt8] { [0x30] + le32(UInt32(unix - epoch2000)) + le32(UInt32(bitPattern: Int32(offset))) }
+func timezonePayload(unix: Int, rule: String) -> [UInt8] {
+    [0x29] + le32(UInt32(unix - epoch2000)) + Array((Array(rule.utf8) + [UInt8](repeating: 0, count: 32)).prefix(32))
+}
+/// POSIX TZ rule like the page's posixTZ(): EU zones only (WET/CET/EET with EU summer time), else nil.
+func posixTZ() -> String? {
+    let tz = TimeZone.current, year = Calendar.current.component(.year, from: Date())
+    func offset(_ month: Int) -> Int { tz.secondsFromGMT(for: Calendar.current.date(from: DateComponents(year: year, month: month, day: 1))!) / 60 }
+    let std = offset(1), dst = offset(7)
+    guard tz.identifier.hasPrefix("Europe/"), dst == std + 60, let names = [0: ("WET", "WEST"), 60: ("CET", "CEST"), 120: ("EET", "EEST")][std] else { return nil }
+    let h = std / 60
+    return names.0 + (h != 0 ? "-\(h)" : "0") + names.1 + ",M3.5.0/\(1 + h),M10.5.0/\(2 + h)"
+}
 func selfTest() -> Bool {
     let c = combine(Array("meshname".utf8), Array("meshpass".utf8)), r: [UInt8] = Array(0...7), s: [UInt8] = Array(8...15)
     let key = aes(c, r + s, encrypt: true)
     return hex(pairPacket(c, r)) == "0c00010203040506077f4e2d01cbd9af89" && hex(key) == "03a53246e89ea73e0a5d38ae66d370d6"
         && hex(queryPacket(key, [0x0A, 0xFF, 0xFF])) == "02278f3e9880859d7ce4183806fe6aa70d"
+        // Same frames as the web page's protocol.js for the same inputs.
+        && hex(queryFrame(key, clockPayload(unix: 1793985122, offset: 3600))) == "02ef7a0fd9e3bd0eec68ed2229d208f36f"
+        && hex(queryFrame(key, timezonePayload(unix: 1793985122, rule: "CET-1CEST,M3.5.0/2,M10.5.0/3")))
+            == "02622b8c83769b81ee0eba12b77b10103a2c4d332e352e302f322c4d31302e352e302f3300000000"
 }
 
 // ---- Settings file (format "lampcontrol/1", as exported by the web page) ---------------------
@@ -261,6 +292,98 @@ final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 }
 
+// ---- Clock setting: one direct connection per lamp ----------------------------------------------
+final class ClockSetter: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
+    var central: CBCentralManager!
+    let lamps: [LampInfo], combined: [UInt8]
+    var index = 0, attempt = 0, peripheral: CBPeripheral?, chars = [CBUUID: CBCharacteristic]()
+    var random = [UInt8](repeating: 0, count: 8), key: [UInt8]? = nil, frames: [[UInt8]] = []
+    var results = [String](), deadline: DispatchWorkItem?
+
+    init(lamps: [LampInfo], combined: [UInt8]) {
+        self.lamps = lamps; self.combined = combined; super.init()
+        central = CBCentralManager(delegate: self, queue: nil)
+    }
+    var lamp: LampInfo { lamps[index] }
+    func centralManagerDidUpdateState(_ c: CBCentralManager) {
+        if c.state == .poweredOn { start() }
+        else if c.state == .unauthorized { print("Bluetooth access denied for this terminal app."); exit(1) }
+    }
+    func start() {
+        guard index < lamps.count else { finish() ; return }
+        peripheral = nil; key = nil; chars = [:]; attempt += 1
+        print("\(lamp.name): looking for it…")
+        central.scanForPeripherals(withServices: nil)
+        let item = DispatchWorkItem { [weak self] in self?.done("not found or no answer within 20 s") }
+        deadline = item; DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: item)
+    }
+    /// Ends this lamp (ok or not) and moves on to the next.
+    func done(_ result: String) {
+        deadline?.cancel(); central.stopScan()
+        results.append("\(lamp.name): \(result)")
+        print("  \(result)")
+        if let p = peripheral { peripheral = nil; central.cancelPeripheralConnection(p) }
+        index += 1; attempt = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self.start() }
+    }
+    func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral, advertisementData ad: [String: Any], rssi: NSNumber) {
+        guard peripheral == nil, let m = ad[CBAdvertisementDataManufacturerDataKey] as? Data, m.count >= 8 else { return }
+        let b = [UInt8](m)
+        guard b[0] == 0x60, b[1] == 0x01, hex(Array(b[2..<8])) == lamp.id else { return }
+        peripheral = p; p.delegate = self; c.stopScan(); c.connect(p)
+    }
+    func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) { p.discoverServices([serviceUUID]) }
+    func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) { if p == peripheral { done("connect failed") } }
+    func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
+        if p == peripheral { done("disconnected before the clock was set") }
+    }
+    func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        guard let s = p.services?.first(where: { $0.uuid == serviceUUID }) else { done("mesh service not found"); return }
+        p.discoverCharacteristics([statusUUID, commandUUID, pairUUID], for: s)
+    }
+    func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
+        for ch in s.characteristics ?? [] { chars[ch.uuid] = ch }
+        guard let pair = chars[pairUUID], chars[commandUUID] != nil else { done("characteristics missing"); return }
+        _ = SecRandomCopyBytes(kSecRandomDefault, 8, &random)
+        p.writeValue(Data(pairPacket(combined, random)), for: pair, type: .withResponse)
+    }
+    func peripheral(_ p: CBPeripheral, didWriteValueFor ch: CBCharacteristic, error: Error?) {
+        if let e = error { done("write failed: \(e.localizedDescription)"); return }
+        if ch.uuid == pairUUID { DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { p.readValue(for: ch) }; return }
+        if frames.isEmpty { done("clock set"); return }
+        sendNext(p)
+    }
+    func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
+        guard ch.uuid == pairUUID else { return }
+        let v = [UInt8](ch.value ?? Data())
+        guard v.first == 0x0D, v.count >= 9 else {
+            // The lamps sometimes reject every other login (0x0E); one more try after 5 s, like the page.
+            if attempt < 2 {
+                print("  login rejected, trying once more in 5 s…")
+                deadline?.cancel(); peripheral = nil; central.cancelPeripheralConnection(p)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.start() }
+            } else { done("login rejected (check the credentials, close the AwoX app)") }
+            return
+        }
+        let k = aes(combined, random + Array(v[1...8]), encrypt: true)
+        key = k
+        let now = Int(Date().timeIntervalSince1970), offset = TimeZone.current.secondsFromGMT()
+        frames = (posixTZ().map { [queryFrame(k, timezonePayload(unix: now, rule: $0))] } ?? []) + [queryFrame(k, clockPayload(unix: now, offset: offset))]
+        sendNext(p)
+    }
+    func sendNext(_ p: CBPeripheral) {
+        guard let cmd = chars[commandUUID], !frames.isEmpty else { return }
+        let f = frames.removeFirst()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { p.writeValue(Data(f), for: cmd, type: .withResponse) }
+    }
+    func finish() {
+        let rule = posixTZ() ?? "none (only the UTC offset)"
+        print("Done. Time zone rule: \(rule), UTC offset \(TimeZone.current.secondsFromGMT() / 3600) h.")
+        for r in results { print("  " + r) }
+        exit(results.allSatisfy { $0.hasSuffix(": clock set") } ? 0 : 1)
+    }
+}
+
 // ---- Main ----------------------------------------------------------------------------------------
 var args = Array(CommandLine.arguments.dropFirst())
 func option(_ name: String, _ fallback: String) -> String {
@@ -279,6 +402,11 @@ let via: String? = viaArg.map { v in
 print("Mesh name: ", terminator: ""); let name = Array((readLine() ?? "").utf8)
 let pass = Array(String(cString: getpass("Mesh password (hidden): ")).utf8)
 guard (1...16).contains(name.count), (1...16).contains(pass.count) else { print("Credentials must be 1-16 bytes."); exit(1) }
+if args.contains("--set-clock") {
+    let setter = ClockSetter(lamps: lamps, combined: combine(name, pass))
+    RunLoop.main.run(until: Date().addingTimeInterval(Double(lamps.count) * 45 + 10))
+    print("Timeout."); setter.finish()
+}
 let sync = Sync(lamps: lamps, combined: combine(name, pass), outPath: outPath)
 RunLoop.main.run(until: Date().addingTimeInterval(180))
 print("Timeout."); sync.write(); exit(1)

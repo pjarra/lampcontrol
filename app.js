@@ -63,6 +63,19 @@
   function storageGet(key) { try { return JSON.parse(localStorage.getItem(key)); } catch (_) { return null; } }
   function storageSet(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) { /* optional */ } }
   function storageRemove(key) { try { localStorage.removeItem(key); } catch (_) { /* optional */ } }
+  // Clock and time-zone frames carry no lamp address, so only a direct connection sets them;
+  // through the mesh they are not sent. A lamp loses its clock on power loss (2026-11-08:
+  // schedules then stop firing). Returns false if the clock could not be sent.
+  function sendClock(lamp) {
+    queue(lamp, 'timezone', null);
+    return queue(lamp, 'clock', null, sent => { if (sent) storageSet('clock:' + lamp.id, Date.now()); });
+  }
+  function clockWarning(lamp) {
+    const at = storageGet('clock:' + lamp.id);
+    return ' Its clock was NOT set (reached through the mesh only' + (at ? '; last set from this browser ' +
+      new Date(at).toLocaleString([], {dateStyle: 'short', timeStyle: 'short'}) : '') +
+      '). After a power loss, connect it once via Own connection, or run lampsync --set-clock on the Mac.';
+  }
   const events = [];
   let bootOK = false;
 
@@ -202,8 +215,7 @@
           $('status').textContent = lamp.name + ' connected.';
           // Schedules need the lamp clock; it stores a fixed UTC offset, so refresh on every connect (DST).
           lamp.lastActivity = Date.now();
-          queue(lamp, 'timezone', null);
-          queue(lamp, 'clock', null);
+          sendClock(lamp);
         })
         .catch(error => {
           dropPending(lamp);
@@ -330,14 +342,15 @@
       const frames = TIMER_SLOTS.map(routine => frame(routine, bySlot.get(routine) || null))
         .concat(RETIRED_SLOTS.map(routine => frame(routine, null)));
       const snapshot = JSON.stringify(entries);
+      let clockSet = true;
       const done = tracker(frames.length, ok => {
         if (!ok) { $('status').textContent = lamp.name + ': switching times NOT saved (connection failed). Connect and save again.'; return; }
         if (JSON.stringify(entries) === snapshot) dirty = false;
         savedAt = Date.now(); persist(); showState();
-        $('status').textContent = lamp.name + ': switching times saved to the lamp.';
+        $('status').textContent = lamp.name + ': switching times saved to the lamp.' + (clockSet ? '' : clockWarning(lamp));
+        if (!clockSet) log(lamp.name + ': schedules saved through the mesh; clock not set.');
       });
-      queue(lamp, 'timezone', null);
-      queue(lamp, 'clock', null);
+      clockSet = sendClock(lamp);
       let accepted = true;
       for (const f of frames) accepted = queue(lamp, 'schedule:' + f.routine, f, done) && accepted;
       $('status').textContent = accepted ? lamp.name + ': saving ' + frames.length + ' slots…' : lamp.name + ': not connected. Connect first (top card).';
@@ -411,14 +424,15 @@
       if (offPart) frames.push(['schedule:' + def.offRoutine, offPart]);
       if (def.replaces) frames.push(['schedule:' + def.replaces, {address: SCHEDULE_ADDRESS, routine: def.replaces, enabled: false,
         hour, minute, weekdays: 0x7F, fade: 0, on: false, keepLight: true}]);
+      let clockSet = true;
       const done = tracker(frames.length, ok => {
         if (!ok) { $('status').textContent = lamp.name + ': ' + def.title + ' NOT sent (connection failed). Connect and save again.'; return; }
         record.sentAt = Date.now();
         storageSet(storeKey, record); showSaved(record);
-        $('status').textContent = lamp.name + ': ' + def.title + ' sent to the lamp.';
+        $('status').textContent = lamp.name + ': ' + def.title + ' sent to the lamp.' + (clockSet ? '' : clockWarning(lamp));
+        if (!clockSet) log(lamp.name + ': ' + def.title + ' saved through the mesh; clock not set.');
       });
-      queue(lamp, 'timezone', null);
-      queue(lamp, 'clock', null);
+      clockSet = sendClock(lamp);
       let accepted = true;
       for (const [kind, frame] of frames) accepted = queue(lamp, kind, frame, done) && accepted;
       $('status').textContent = accepted ? lamp.name + ': sending ' + def.title + '…' : lamp.name + ': not connected. Connect first (top card).';

@@ -34,6 +34,19 @@ swift tools/lampsync.swift            # asks for the mesh credentials; writes la
 Import that file in the page on any device, adjust if needed, then *Save all to lamp* per lamp.
 Settings files stay out of git (`.gitignore`). `tools/readback.swift` is the raw diagnostic version.
 
+## After a power loss: set the clocks
+
+A lamp loses its clock when it loses power, and its schedules then stop firing. The clock is only
+set over a direct connection (the frames carry no lamp address, so the mesh does not pass them on).
+Either connect each lamp once via *Own connection* in the page, or on the Mac:
+
+```bash
+swift tools/lampsync.swift --set-clock   # connects to each lamp in turn; writes only time and time zone
+```
+
+Never write schedule IDs above 16: on 2026-11-08 that broke the lamps' schedule tables. A direct
+connection plus *Save all to lamp* repaired them; `lampsync` names any slot that does not answer.
+
 ## Development
 
 Local: `python3 -m http.server 8765 --bind 127.0.0.1`, then open <http://localhost:8765> in Chrome.
