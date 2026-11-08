@@ -1,6 +1,9 @@
 // lampsync: read what the lamps really hold and write it as a Lamp Control settings file.
 //
-//   swift tools/lampsync.swift [--out lampcontrol-settings.json] [--lamps lamps.json]
+//   swift tools/lampsync.swift [--via lamp-name] [--out lampcontrol-settings.json] [--lamps lamps.json]
+//
+// --via connects through that lamp (name or id from lamps.json); default: the first one seen.
+// The file is only written when every lamp answered for every slot.
 //
 // Connects to any lamp of the mesh, logs in with credentials typed at runtime (never stored or
 // printed), and reads every lamp's schedule slots through the mesh. Only read queries are sent.
@@ -154,7 +157,7 @@ final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral, advertisementData ad: [String: Any], rssi: NSNumber) {
         guard peripheral == nil, let m = ad[CBAdvertisementDataManufacturerDataKey] as? Data, m.count >= 8 else { return }
         let b = [UInt8](m), id = hex(Array(b[2..<8]))
-        guard b[0] == 0x60, b[1] == 0x01, lamps.contains(where: { $0.id == id }) else { return }
+        guard b[0] == 0x60, b[1] == 0x01, lamps.contains(where: { $0.id == id }), via.map({ $0 == id }) ?? true else { return }
         connectedId = id
         print("Connecting to \(lamps.first { $0.id == id }!.name) (RSSI \(rssi))…")
         peripheral = p; p.delegate = self; c.stopScan(); c.connect(p)
@@ -242,6 +245,12 @@ final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
             if let w = wake { print("  wake-up \(w.time) \(w.days), fade \(w.fade) min" + (w.off.map { ", off \($0)" } ?? "") + (w.active ? "" : " (inactive)")) }
             out.append(LampOut(name: lamp.name, id: lamp.id, wakeup: wake, times: entries))
         }
+        let incomplete = lamps.filter { l in readSlots.contains { slots[l.address]?[$0] == nil } }
+        if !incomplete.isEmpty {
+            print("Not written: no complete read for \(incomplete.map { $0.name }.joined(separator: ", ")). \(outPath) is unchanged.")
+            print("Close other apps or pages connected to the lamps, or try --via another lamp.")
+            return
+        }
         let iso = ISO8601DateFormatter().string(from: Date())
         let file = SettingsFile(format: "lampcontrol/1", exported: iso, source: "read from the lamps by tools/lampsync.swift", lamps: out)
         try! (render(json(file)) + "\n").write(toFile: outPath, atomically: true, encoding: .utf8)
@@ -259,6 +268,11 @@ if args.first == "--selftest" { print(selfTest() ? "selftest PASS" : "selftest F
 guard selfTest() else { print("Crypto self-test failed; not connecting."); exit(1) }
 let lamps = loadLamps(option("--lamps", "lamps.json"))
 let outPath = option("--out", "lampcontrol-settings.json")
+let viaArg = args.firstIndex(of: "--via").map { _ in option("--via", "").lowercased() }
+let via: String? = viaArg.map { v in
+    guard let l = lamps.first(where: { $0.id == v || $0.name.lowercased() == v }) else { print("--via: no lamp \"\(v)\" in lamps.json."); exit(1) }
+    return l.id
+}
 print("Mesh name: ", terminator: ""); let name = Array((readLine() ?? "").utf8)
 let pass = Array(String(cString: getpass("Mesh password (hidden): ")).utf8)
 guard (1...16).contains(name.count), (1...16).contains(pass.count) else { print("Credentials must be 1-16 bytes."); exit(1) }
