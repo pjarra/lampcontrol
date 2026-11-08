@@ -134,8 +134,9 @@ func loadLamps(_ path: String) -> [LampInfo] {
 
 // ---- Bluetooth session -------------------------------------------------------------------------
 let readSlots = [2, 3, 4, 5, 6, 7, 8] + Array(9...16)
-/// IDs written by the slot-limit experiment (never fired, maybe still stored); read once and reported.
-let leftoverSlots = [32, 64, 127]
+/// IDs above 16 are not read: after reads and writes of 32/64/127 (2026-11-08) the lamps stopped
+/// answering schedule reads and running schedules.
+let leftoverSlots: [Int] = []
 
 final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     var central: CBCentralManager!

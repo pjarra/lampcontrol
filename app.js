@@ -50,8 +50,9 @@
     return slots.every(s => s !== undefined) ? slots : null; // null: too many On entries
   }
   const timerCapacity = entries => TIMER_SLOTS.length - (entries.some(t => !t.on) ? 0 : 1);
-  // Also cleared on save: the experiment's IDs 32/64/127 never fired but may still be stored.
-  const RETIRED_SLOTS = [P.ROUTINE.nightlight, P.ROUTINE.nightlightOff, 32, 64, 127];
+  // Never write IDs above 16 here: after Save all also cleared 32/64/127 (2026-11-08), no lamp
+  // answered schedule reads or ran its schedules any more.
+  const RETIRED_SLOTS = [P.ROUTINE.nightlight, P.ROUTINE.nightlightOff];
   // The AwoX app writes 0x0000 as the schedule address for every lamp (capture).
   const SCHEDULE_ADDRESS = 0x0000;
   // Display order Monday first; values are mask bits (bit 0 = Sunday).
@@ -322,7 +323,7 @@
         if (!t || !t.on) return {...base, on: false, keepLight: true};
         return {...base, on: true, brightness: t.b, ...(t.mode === 'color' ? {color: [t.h, t.s]} : {mired: t.mired})};
       };
-      // The whole list, unused slots disabled, plus the retired evening and experiment slots.
+      // The whole list, unused slots disabled, plus the retired evening slots.
       const slots = assignSlots(entries);
       if (!slots) { $('status').textContent = lamp.name + ': at most ' + (TIMER_SLOTS.length - 1) + ' On entries; delete one or make it Off.'; return; }
       const bySlot = new Map(slots.map((slot, i) => [slot, entries[i]]));
