@@ -227,7 +227,9 @@ final class Sync: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         for lamp in lamps {
             let s = slots[lamp.address] ?? [:]
             let state = power[lamp.address].map { $0 ? "on" : "off" } ?? "unknown"
-            print("\(lamp.name): \(readSlots.filter { s[$0] != nil }.count)/\(readSlots.count) slots read, currently \(state)")
+            let unanswered = readSlots.filter { s[$0] == nil }
+            print("\(lamp.name): \(readSlots.count - unanswered.count)/\(readSlots.count) slots read, currently \(state)"
+                  + (unanswered.isEmpty ? "" : "; no answer for slot " + unanswered.map(String.init).joined(separator: ", ")))
             for r in leftoverSlots {
                 guard let x = s[r] else { print("  experiment slot \(r): no answer"); continue }
                 if !x.cleared { print("  WARNING: experiment slot \(r) still holds \(x.enabled ? "an ACTIVE" : "an inactive") \(x.entry.action)"
