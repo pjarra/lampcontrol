@@ -48,6 +48,11 @@ swift tools/lampsync.swift --set-clock   # connects to each lamp in turn; writes
 Never write schedule IDs above 16: on 2026-11-08 that broke the lamps' schedule tables. A direct
 connection plus *Save all to lamp* repaired them; `lampsync` names any slot that does not answer.
 
+## Bridge (ESP32)
+
+`bridge/` holds firmware for an ESP32 that controls the lamps from any browser on the home Wi-Fi,
+including an e-ink page for an old Kindle, and keeps the lamps' clocks set. See `bridge/README.md`.
+
 ## Development
 
 Local: `python3 -m http.server 8765 --bind 127.0.0.1`, then open <http://localhost:8765> in Chrome.

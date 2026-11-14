@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Bridge Settings</title>
+<style>
+:root { --bg: #f4f1ea; --surface: #fffdf8; --line: #e2dccf; --text: #24211c; --muted: #7a7266; --accent: #d9822b; }
+@media (prefers-color-scheme: dark) { :root { --bg: #16181c; --surface: #1f2228; --line: #343943; --text: #ece8e1; --muted: #9a958c; --accent: #f0a050; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+main { max-width: 640px; margin: 0 auto; padding: 16px 16px 40px; }
+h1 { font-size: 1.6rem; margin: 4px 0 12px; }
+h2 { font-size: 1.05rem; margin: 0 0 6px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 14px 16px; margin-bottom: 12px; }
+pre { margin: 0; font: .8rem/1.5 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+p { margin: 6px 0; } .small { font-size: .85rem; color: var(--muted); }
+button { font: inherit; font-weight: 650; min-height: 42px; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--line);
+  background: var(--surface); color: var(--text); cursor: pointer; margin: 4px 6px 4px 0; }
+button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+a { color: inherit; }
+</style></head>
+<body><main>
+<h1>Bridge settings</h1>
+<div class="card"><h2>Status</h2><pre id="info">Loading…</pre></div>
+<div class="card">
+  <h2>Lamp clocks</h2>
+  <p class="small">The bridge sets every lamp's clock each night at 03:30. After a power cut, set them now. The lamps are
+    unreachable for about 15 s per lamp while this runs.</p>
+  <button class="primary" id="clocks">Set all clocks now</button>
+</div>
+<div class="card">
+  <h2>Scenes</h2>
+  <p class="small">Import the scenes from a settings file exported by the Lamp Control page (<em>Settings file → Export file</em>).
+    This replaces the bridge's scenes; schedules in the file are ignored.</p>
+  <button class="primary" id="pick">Import settings file…</button><input id="file" type="file" accept=".json,application/json" hidden>
+</div>
+<div class="card">
+  <h2>Lamps</h2>
+  <p class="small">The lamp list comes from lamps.json on GitHub Pages (add lamps with tools/scan-lamps.swift on the Mac).</p>
+  <button id="reload">Reload lamps.json</button>
+</div>
+<p id="result" class="small"></p>
+<p class="small"><a href="/">Lamps</a> · <a href="/k">Kindle page</a></p>
+</main>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+async function call(path, body, type = 'application/x-www-form-urlencoded') {
+  const res = await fetch(path, body === undefined ? {} : {method: 'POST', headers: {'Content-Type': type}, body});
+  const text = await res.text();
+  if (!res.ok) throw new Error(text);
+  return text;
+}
+async function info() { try { $('info').textContent = await call('/api/info'); } catch (e) { $('info').textContent = 'Bridge not reachable.'; } }
+async function act(path, body, type) {
+  try { $('result').textContent = await call(path, body, type); } catch (e) { $('result').textContent = e.message; }
+  info();
+}
+$('clocks').onclick = () => act('/api/clocks', '');
+$('reload').onclick = () => act('/api/lamps/reload', '');
+$('pick').onclick = () => $('file').click();
+$('file').onchange = async () => {
+  const file = $('file').files[0];
+  $('file').value = '';
+  if (file) act('/api/scenes', await file.text(), 'text/plain');
+};
+info();
+setInterval(info, 10000);
+</script>
+</body></html>

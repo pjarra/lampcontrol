@@ -1,0 +1,105 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=600">
+<title>Lamps</title>
+<style>
+/* Kindle (5th gen) Experimental Browser: WebKit 528, 600x706, 16 grey levels. Black on white only. */
+body { margin: 0; padding: 10px 14px; font: 22px/1.25 sans-serif; color: #000; background: #fff; }
+h1 { font-size: 30px; margin: 0; }
+.top { overflow: hidden; border-bottom: 3px solid #000; padding-bottom: 6px; margin-bottom: 8px; }
+.top h1 { float: left; }
+#msg { float: right; font-size: 16px; margin-top: 10px; text-align: right; }
+h2 { font-size: 18px; text-transform: uppercase; letter-spacing: 1px; margin: 12px 0 4px; }
+button { font: bold 22px sans-serif; color: #000; background: #fff; border: 3px solid #000; border-radius: 10px;
+  padding: 8px 4px; margin: 0; }
+button.on { background: #000; color: #fff; }
+button.busy { border-style: dashed; }
+.scenes button { width: 278px; height: 62px; margin: 0 6px 8px 0; }
+.lamp { border-top: 1px solid #000; padding: 6px 0; overflow: hidden; }
+.lamp .name { font-weight: bold; font-size: 24px; }
+.lamp .state { float: right; font-size: 20px; }
+.lamp .row { clear: both; padding-top: 4px; }
+.lamp .row button { width: 106px; height: 52px; margin-right: 4px; }
+.all button { width: 278px; height: 62px; margin: 10px 6px 0 0; }
+#foot { font-size: 14px; margin-top: 8px; }
+</style></head>
+<body>
+<div class="top"><h1>Lamps</h1><div id="msg">Loading…</div></div>
+<div id="scenes"></div>
+<div id="lamps"></div>
+<div class="all"><button onclick="allPower(0, this)">All off</button><button onclick="allPower(1, this)">All on</button></div>
+<div id="foot"></div>
+<script>
+// ES3 only: no JSON, fetch, Promise, localStorage, forEach (the Kindle's browser lacks most of them).
+// Handler names avoid document properties (an inline onclick="all()" would call document.all).
+var lamps = [], scenes = [], shown = {scenes: '', lamps: ''}, timeSent = false, busy = 0;
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function request(method, url, body, done) {
+  var x = new XMLHttpRequest();
+  x.open(method, url, true);
+  x.onreadystatechange = function () { if (x.readyState == 4) done(x.status, x.responseText); };
+  if (body !== null) x.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+  x.send(body);
+}
+function parse(text) {
+  var rows = text.split('\n'), i, f, out = {lamps: [], scenes: [], bridge: '', message: '', time: true};
+  for (i = 0; i < rows.length; i++) {
+    f = rows[i].split('\t');
+    if (f[0] == 'bridge') { out.bridge = f[1]; out.message = f[2]; }
+    else if (f[0] == 'time') out.time = f[1] == '1';
+    else if (f[0] == 'lamp') out.lamps.push({id: f[1], name: f[2], on: f[3], b: f[4]});
+    else if (f[0] == 'scene') out.scenes.push({i: f[1], name: f[2]});
+  }
+  return out;
+}
+function render(text) {
+  var s = parse(text), i, h, l;
+  lamps = s.lamps; scenes = s.scenes;
+  // Only touch the page where something changed: e-ink redraws are slow and leave ghosts.
+  h = '';
+  if (scenes.length) {
+    h = '<h2>Scenes</h2><div class="scenes">';
+    for (i = 0; i < scenes.length; i++) h += '<button onclick="scene(' + i + ', this)">' + esc(scenes[i].name) + '</button>';
+    h += '</div>';
+  }
+  if (h != shown.scenes) { $('scenes').innerHTML = h; shown.scenes = h; }
+  h = '<h2>Lamps</h2>';
+  for (i = 0; i < lamps.length; i++) {
+    l = lamps[i];
+    h += '<div class="lamp"><span class="name">' + esc(l.name) + '</span><span class="state">' +
+      (l.on == '1' ? 'on, ' + l.b + ' %' : l.on == '0' ? 'off' : '?') + '</span><div class="row">' +
+      '<button class="' + (l.on == '1' ? 'on' : '') + '" onclick="lamp(' + i + ', \'on=1\', this)">On</button>' +
+      '<button class="' + (l.on == '0' ? 'on' : '') + '" onclick="lamp(' + i + ', \'on=0\', this)">Off</button>' +
+      '<button onclick="lamp(' + i + ', \'b=10\', this)">10 %</button>' +
+      '<button onclick="lamp(' + i + ', \'b=50\', this)">50 %</button>' +
+      '<button onclick="lamp(' + i + ', \'b=100\', this)">100 %</button></div></div>';
+  }
+  if (h != shown.lamps) { $('lamps').innerHTML = h; shown.lamps = h; }
+  $('msg').innerHTML = esc(s.bridge == '-' ? 'Not connected' : 'Connected via ' + s.bridge) + '<br>' + esc(s.message);
+  // The bridge needs the time for the lamps' clocks; a browser can supply it if there is no internet.
+  if (!s.time && !timeSent) { timeSent = true; request('POST', '/api/time', 't=' + new Date().getTime(), function () {}); }
+}
+function post(path, body, button) {
+  busy++;
+  if (button) button.className += ' busy';
+  request('POST', path, body, function (status, text) {
+    busy--;
+    if (button) button.className = button.className.replace(' busy', '');
+    if (status == 200) render(text);
+    else $('msg').innerHTML = esc(status ? 'Error: ' + text : 'Bridge not reachable');
+  });
+}
+function lamp(i, what, button) { post('/api/lamp', 'id=' + lamps[i].id + '&' + what, button); }
+function scene(i, button) { post('/api/scene', 'i=' + scenes[i].i, button); }
+function allPower(on, button) { post('/api/all', 'on=' + on, button); }
+function refresh() {
+  if (busy) return;
+  request('GET', '/api/state', null, function (status, text) {
+    if (status == 200) { render(text); $('foot').innerHTML = 'Updated ' + new Date().toTimeString().substr(0, 5); }
+    else $('msg').innerHTML = 'Bridge not reachable';
+  });
+}
+refresh();
+setInterval(refresh, 20000);
+</script>
+</body></html>
