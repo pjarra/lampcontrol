@@ -35,7 +35,8 @@ volatile bool lampsReloadRequested = true;
 bool wifiConfigured = false;
 
 struct Guard { Guard() { xSemaphoreTake(modelLock, portMAX_DELAY); } ~Guard() { xSemaphoreGive(modelLock); } };
-std::string pref(const char* key, const char* fallback = "") { return prefs.getString(key, fallback).c_str(); }
+// isKey first: the core would log an error line for every missing key.
+std::string pref(const char* key, const char* fallback = "") { return prefs.isKey(key) ? prefs.getString(key, fallback).c_str() : fallback; }
 
 std::string readFile(const char* path) {
   File f = LittleFS.open(path, "r");
