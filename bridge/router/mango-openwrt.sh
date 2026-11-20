@@ -9,7 +9,8 @@
 # boards with Bluetooth must use (2026-11-20). OpenWrt uses the open mt76 (mt7603) driver.
 set -euo pipefail
 
-ROUTER=192.168.8.1
+# ROUTER=fdd3:cb18:b67b::1 when the Mac has no IPv4 address on the router's network (IPv6 works).
+ROUTER=${ROUTER:-192.168.8.1}
 BRIDGE_MAC=68:09:47:9f:6f:2c
 # Fresh install: new host key, no root password yet. Keep it out of the normal known_hosts file.
 SSH=(ssh -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR root@$ROUTER)
@@ -27,6 +28,8 @@ set -e
 IFS= read -r WIFI_KEY
 IFS= read -r ROOT_PW
 printf '%s\n%s\n' "$ROOT_PW" "$ROOT_PW" | passwd root >/dev/null
+# OpenWrt 25.12 keeps the netmask in ipaddr: without /24 the LAN is a /32 and DHCP hands out nothing.
+uci set network.lan.ipaddr='192.168.8.1/24'
 uci set wireless.radio0.country='DE'
 uci set wireless.radio0.channel='1'
 uci set wireless.radio0.htmode='HT20'
