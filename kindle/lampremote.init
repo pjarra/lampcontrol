@@ -1,0 +1,15 @@
+#!/bin/sh
+# Lamp remote (lampcontrol, kindle/): starts /mnt/us/lamps/lamps.sh 60 s after boot, once the Kindle
+# UI has finished starting. Safety switch: a file /mnt/us/lamps/DISABLED (on the USB drive) skips it.
+# Installed as /etc/init.d/lampremote with /etc/rc5.d/S99lampremote.
+case "$1" in
+  start)
+    [ -f /mnt/us/lamps/DISABLED ] && exit 0
+    [ -f /mnt/us/lamps/lamps.sh ] || exit 0
+    start-stop-daemon -S -b -x /bin/sh -- -c 'sleep 60; [ -f /mnt/us/lamps/DISABLED ] || exec sh /mnt/us/lamps/lamps.sh'
+    ;;
+  stop)
+    killall lampctl 2>/dev/null
+    ;;
+esac
+exit 0
