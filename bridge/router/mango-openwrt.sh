@@ -4,7 +4,9 @@
 # (both hidden), sends them over SSH on stdin (never on a command line or into a file), and sets up:
 #   - Wi-Fi "Mango" (WPA2, channel 1, 20 MHz), address 192.168.8.1 as before
 #   - iPhone USB tethering as the internet connection (usbmuxd + ipheth)
-#   - a fixed address for the lamp bridge (192.168.8.146)
+#   - fixed addresses for the lamp bridge (192.168.8.146) and the Kindle remote (192.168.8.121)
+# Key login: this OpenWrt build's dropbear has no ed25519 support; add an RSA key to
+# /etc/dropbear/authorized_keys (mode 600, folder 700).
 # Why: GL.iNet's closed MediaTek driver drops frames for Wi-Fi clients in power save, which ESP32
 # boards with Bluetooth must use (2026-11-20). OpenWrt uses the open mt76 (mt7603) driver.
 set -euo pipefail
@@ -47,6 +49,11 @@ host=$(uci add dhcp host)
 uci set "dhcp.$host.name=lampbridge"
 uci set "dhcp.$host.mac=$BRIDGE_MAC"
 uci set "dhcp.$host.ip=192.168.8.146"
+# ... and for the Kindle remote (kindle/), which the Mac reaches over SSH.
+host=$(uci add dhcp host)
+uci set "dhcp.$host.name=kindle"
+uci set "dhcp.$host.mac=f0:a2:25:33:e1:28"
+uci set "dhcp.$host.ip=192.168.8.121"
 uci commit
 /etc/init.d/usbmuxd enable
 /etc/init.d/usbmuxd start
