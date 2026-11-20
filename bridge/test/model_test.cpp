@@ -16,6 +16,7 @@ struct Fake : api::Platform {
   bool known = false; std::string stored; int clocks = 0;
   uint32_t nowMs() override { return 1000; }
   bool timeKnown() override { return known; }
+  std::string localTime() override { return "21:10:05"; }
   void setTime(uint64_t) override { known = true; }
   std::string conn = "Kamin";
   std::string connection() override { return conn; }

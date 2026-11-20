@@ -45,6 +45,10 @@ struct Sim : api::Platform {
   std::string scenesStored;
   uint32_t nowMs() override { return now(); }
   bool timeKnown() override { return known; }
+  std::string localTime() override {
+    char buf[16]; time_t now = time(nullptr); struct tm lt; localtime_r(&now, &lt);
+    strftime(buf, sizeof buf, "%H:%M:%S", &lt); return buf;
+  }
   void setTime(uint64_t ms) override { known = true; std::printf("time set from a browser: %llu\n", (unsigned long long)ms); }
   std::string connection() override { return "Kamin (simulated)"; }
   std::string message() override { return "Simulated lamps (host test server)"; }

@@ -84,6 +84,12 @@ void reloadLamps() {
 struct Board : api::Platform {
   uint32_t nowMs() override { return millis(); }
   bool timeKnown() override { return mesh::timeKnown(); }
+  std::string localTime() override {
+    char buf[16];
+    time_t now = time(nullptr); struct tm lt; localtime_r(&now, &lt);
+    strftime(buf, sizeof buf, "%H:%M:%S", &lt);
+    return buf;
+  }
   void setTime(uint64_t ms) override {
     timeval tv = {(time_t)(ms / 1000), (suseconds_t)((ms % 1000) * 1000)};
     settimeofday(&tv, nullptr);

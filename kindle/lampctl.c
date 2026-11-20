@@ -39,7 +39,7 @@ typedef struct { Kind kind; char id[16]; char name[64]; int on; int brightness; 
 
 static Item items[MAX_ITEMS];
 static int count = 0, selected = 0, first = 0, renders = 0;
-static char bridgeHost[64] = "192.168.8.146", status[96] = "", via[64] = "";
+static char bridgeHost[64] = "192.168.8.146", status[96] = "", via[64] = "", clockText[16] = "";
 static int fb = -1;
 static FBInkConfig cfg;
 
@@ -99,6 +99,8 @@ static void parseState(char* text) {
         it.on = f[3][0] == '1' ? 1 : f[3][0] == '0' ? 0 : -1;
         it.brightness = atoi(f[4]);
         next[n++] = it;
+      } else if (pass == 0 && k >= 3 && !strcmp(f[0], "time") && f[1][0] == '1') {
+        snprintf(clockText, 6, "%s", f[2]);  // HH:MM from the bridge (the Kindle's clock is off)
       } else if (pass == 0 && k >= 3 && !strcmp(f[0], "bridge")) {
         snprintf(via, sizeof via, "%s", strcmp(f[1], "-") ? f[1] : "");
       }
@@ -125,12 +127,11 @@ static bool refreshState(void) {
   int code = http("GET", "/api/state", NULL, buf, sizeof buf);
   if (code != 200) { snprintf(status, sizeof status, "Bridge not reachable"); return false; }
   parseState(buf);
-  time_t now = time(NULL);
-  struct tm lt;
-  localtime_r(&now, &lt);
-  // Seconds, so every reload (Back/Home/Menu) visibly changes the line.
-  if (via[0]) snprintf(status, sizeof status, "via %s  ·  updated %02d:%02d:%02d", via, lt.tm_hour, lt.tm_min, lt.tm_sec);
-  else snprintf(status, sizeof status, "NO LAMP CONNECTION  ·  nothing is sent  ·  %02d:%02d", lt.tm_hour, lt.tm_min);
+  // The bridge's time (internet time); a reload counter makes every Back/Home/Menu visible.
+  static int reloads = 0;
+  reloads++;
+  if (via[0]) snprintf(status, sizeof status, "via %s  ·  %s  ·  #%d", via, clockText[0] ? clockText : "--:--", reloads % 100);
+  else snprintf(status, sizeof status, "NO LAMP CONNECTION  ·  nothing is sent  ·  %s", clockText[0] ? clockText : "--:--");
   return true;
 }
 
@@ -220,7 +221,8 @@ static void render(bool flash) {
 }
 
 // ---- Actions ---------------------------------------------------------------------------------------
-static const int STEPS[] = {5, 10, 30, 60, 100};
+// Lowest step 10 %: at 5 % the Sofa lamp's white LEDs go out and it glows red (2026-11-20).
+static const int STEPS[] = {10, 30, 60, 100};
 static void brightnessStep(Item* it, int dir) {
   int n = sizeof STEPS / sizeof STEPS[0], target = it->brightness;
   if (dir > 0) { target = STEPS[n - 1]; for (int i = 0; i < n; i++) if (STEPS[i] > it->brightness) { target = STEPS[i]; break; } }

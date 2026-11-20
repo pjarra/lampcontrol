@@ -2,7 +2,7 @@
 // because the Kindle's browser (WebKit 528) has no JSON object.
 //
 //   GET  /api/state            bridge\t<connected lamp or ->\t<message>
-//                              time\t<1 if the clock is known, else 0>
+//                              time\t<1 if the clock is known, else 0>\t<local HH:MM:SS, if known>
 //                              lamp\t<id>\t<name>\t<on 1|0|?>\t<brightness %>\t<w|c>\t<kelvin>\t<hue>\t<sat %>\t<reported 1|0>
 //                              scene\t<index>\t<name>
 //   Light commands answer 503 while the bridge has no lamp connection (nothing is queued).
@@ -28,6 +28,7 @@ struct Platform {
   virtual ~Platform() {}
   virtual uint32_t nowMs() = 0;
   virtual bool timeKnown() = 0;
+  virtual std::string localTime() = 0;    // "HH:MM:SS" (the Kindle's own clock is unreliable)
   virtual void setTime(uint64_t unixMs) = 0;
   virtual std::string connection() = 0;   // name of the lamp the bridge is connected to, or ""
   virtual std::string message() = 0;      // short status line

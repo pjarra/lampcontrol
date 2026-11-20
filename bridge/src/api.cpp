@@ -22,7 +22,7 @@ std::string num(long v) { return std::to_string(v); }
 std::string state(Model& model, Platform& platform) {
   std::string conn = platform.connection();
   std::string out = "bridge\t" + (conn.empty() ? std::string("-") : conn) + "\t" + platform.message() + "\n";
-  out += std::string("time\t") + (platform.timeKnown() ? "1" : "0") + "\n";
+  out += std::string("time\t") + (platform.timeKnown() ? "1\t" + platform.localTime() : "0\t") + "\n";
   for (auto& l : model.lamps) {
     // Without a lamp connection the last known state may be stale: report it as unknown.
     out += "lamp\t" + l.id + "\t" + l.name + "\t" + (l.on < 0 || conn.empty() ? "?" : l.on ? "1" : "0") + "\t" + num(l.brightness) +
