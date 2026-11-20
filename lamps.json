@@ -4,7 +4,7 @@
     {"name": "Standleuchte", "id": "9620b155bc38", "meshAddress": "0x2A37"},
     {"name": "Schlafzimmerschrank", "id": "9620d54a6538", "meshAddress": "0x3AA3"},
     {"name": "Kamin", "id": "96203f0f6338", "meshAddress": "0x7780"},
-    {"name": "Sofa", "id": "9620b4b84738", "meshAddress": "0x0000"},
-    {"name": "Decke", "id": "96206cca5238", "meshAddress": "0xB5ED"}
+    {"name": "Decke", "id": "9620b4b84738", "meshAddress": "0x0000"},
+    {"name": "Sofa", "id": "96206cca5238", "meshAddress": "0xB5ED"}
   ]
 }
