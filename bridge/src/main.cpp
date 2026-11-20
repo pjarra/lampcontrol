@@ -149,7 +149,7 @@ void console() {
     if (cmd.rfind("set ", 0) == 0) {
       size_t sp = cmd.find(' ', 4);
       std::string k = cmd.substr(4, sp - 4), v = sp == std::string::npos ? "" : unhex(cmd.substr(sp + 1));
-      const char* keys[] = {"wifi_ssid", "wifi_pass", "mesh_name", "mesh_pass", "tz", "lamps_url"};
+      const char* keys[] = {"wifi_ssid", "wifi_pass", "mesh_name", "mesh_pass", "tz", "lamps_url", "wifi_off", "ble_off"};
       bool known = false;
       for (const char* x : keys) if (k == x) { prefs.putString(x, v.c_str()); known = true; }
       if (k == "lamps_json") { known = writeFile("/lamps.json", v); }
@@ -157,6 +157,10 @@ void console() {
     } else if (cmd == "info") {
       Serial.printf("ok wifi=%s mesh=%s ip=%s\n", pref("wifi_ssid").empty() ? "missing" : "set",
                     pref("mesh_name").empty() || pref("mesh_pass").empty() ? "missing" : "set", WiFi.localIP().toString().c_str());
+    } else if (cmd == "status") {
+      std::string s = board.info();
+      for (auto& c : s) if (c == '\n') c = '|';
+      Serial.printf("ok %s\n", s.c_str());
     } else if (cmd == "forget") {
       prefs.clear(); LittleFS.remove("/scenes.json");
       Serial.println("ok forgotten");
@@ -184,12 +188,17 @@ void setup() {
   if (!scenes.empty()) model.loadScenes(scenes);
 
   std::string ssid = pref("wifi_ssid"), wifiPass = pref("wifi_pass");
-  wifiConfigured = !ssid.empty();
+  // wifi_off=1 (serial console): Bluetooth alone, for diagnosing radio coexistence.
+  wifiConfigured = !ssid.empty() && pref("wifi_off") != "1";
   if (wifiConfigured) {
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(HOSTNAME);
     WiFi.setAutoReconnect(true);
     WiFi.begin(ssid.c_str(), wifiPass.c_str());
+    // The Mango (MediaTek driver) loses frames for dozing clients: with Wi-Fi power saving the bridge
+    // answered no pings, without it 10/10 in 11 ms (2026-11-20). But with Bluetooth running the ESP32
+    // aborts unless modem sleep is on, so it can only go off in the ble_off test mode.
+    if (pref("ble_off") == "1") WiFi.setSleep(false);
   } else Serial.println("[bridge] no Wi-Fi configured: run bridge/setup.py on the Mac");
 
   std::string tz = pref("tz", DEFAULT_TZ);
@@ -204,13 +213,15 @@ void setup() {
 
   std::string meshName = pref("mesh_name"), meshPass = pref("mesh_pass");
   uint8_t probe[16];
-  if (self.empty() && awox::combine(meshName, meshPass, probe)) mesh::start(&model, modelLock, meshName, meshPass, tz);
+  // ble_off=1 (serial console): Wi-Fi alone, for diagnosing radio coexistence.
+  if (pref("ble_off") == "1") Serial.println("[bridge] Bluetooth switched off (ble_off)");
+  else if (self.empty() && awox::combine(meshName, meshPass, probe)) mesh::start(&model, modelLock, meshName, meshPass, tz);
   else Serial.println("[bridge] mesh credentials missing: run bridge/setup.py on the Mac");
   memset(probe, 0, sizeof probe);
 }
 
 void loop() {
-  static bool online = false;
+  static bool online = false, wifiWarned = false;
   console();
   if (!wifiConfigured) { delay(20); return; }
   if (WiFi.status() == WL_CONNECTED && !online) {
@@ -219,6 +230,12 @@ void loop() {
     MDNS.begin(HOSTNAME);
     MDNS.addService("http", "tcp", 80);
     server.begin();
+  } else if (!online && millis() > 20000 && !wifiWarned) {
+    // Tell setup.py (and the log) why Wi-Fi does not come up.
+    wifiWarned = true;
+    wl_status_t st = WiFi.status();
+    Serial.printf("[bridge] Wi-Fi not connected yet: %s\n", st == WL_NO_SSID_AVAIL ? "network not found (the name is case-sensitive)"
+                  : st == WL_CONNECT_FAILED ? "connection refused (wrong password?)" : "still trying");
   } else if (WiFi.status() != WL_CONNECTED && online) {
     online = false;
     Serial.println("[bridge] Wi-Fi lost, reconnecting");

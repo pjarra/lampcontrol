@@ -34,6 +34,10 @@ std::string connected, statusText = "Starting", clockReport;
 uint32_t lastWrite = 0, lastQuery = 0, notesSeen = 0, retryAt = 0, retryDelay = 5000;
 int lastClockDay = -1;
 
+// Connection interval 45-75 ms (units of 1.25 ms), timeout 4 s. Wi-Fi shares the radio: at 15 ms
+// the bridge answered almost no pings (2026-11-20). Failed connects (HCI 0x3E) were range, not timing.
+const uint16_t ITVL_MIN = 36, ITVL_MAX = 60, TIMEOUT = 400;
+
 struct Text { Text() { xSemaphoreTake(textLock, portMAX_DELAY); } ~Text() { xSemaphoreGive(textLock); } };
 struct ModelGuard { ModelGuard() { xSemaphoreTake(modelLock, portMAX_DELAY); } ~ModelGuard() { xSemaphoreGive(modelLock); } };
 void setStatus(const std::string& s) { Text t; statusText = s; Serial.printf("[mesh] %s\n", s.c_str()); }
@@ -66,7 +70,13 @@ bool login(const NimBLEAddress& address) {
   uint8_t combined[16];
   if (!awox::combine(meshName, meshPassword, combined)) { setStatus("Mesh credentials invalid"); return false; }
   for (int round = 1; round <= 2; round++) {
-    if (!client->connect(address)) { setStatus("Bluetooth connection failed"); break; }
+    uint32_t t0 = millis();
+    if (!client->connect(address)) {
+      // 574 = HCI 0x3E: the lamp did not answer the connection request; seen below about -65 dBm.
+      setStatus("Bluetooth connection failed (error " + std::to_string(client->getLastError()) + " after " +
+                std::to_string(millis() - t0) + " ms; too far from the lamp?)");
+      break;
+    }
     NimBLERemoteService* service = client->getService(SERVICE);
     pairChar = service ? service->getCharacteristic(PAIR) : nullptr;
     commandChar = service ? service->getCharacteristic(COMMAND) : nullptr;
@@ -143,7 +153,7 @@ void connectMesh() {
   std::vector<Seen> lamps = scan(4);
   if (lamps.empty()) setStatus("No known lamp in range");
   for (size_t i = 0; i < lamps.size() && i < 3; i++) {
-    setStatus("Connecting to " + lamps[i].name);
+    setStatus("Connecting to " + lamps[i].name + " (RSSI " + std::to_string(lamps[i].rssi) + " dBm, " + lamps[i].address.toString() + ")");
     if (!login(lamps[i].address)) continue;
     statusChar->subscribe(true, onNotify, false);  // no CCCD on this lamp: only registers the callback
     ready = true; retryDelay = 5000;
@@ -242,8 +252,10 @@ void start(Model* m, SemaphoreHandle_t lock, const std::string& name, const std:
   textLock = xSemaphoreCreateMutex();
   notifications = xQueueCreate(32, sizeof(Note));
   NimBLEDevice::init("");
+  NimBLEDevice::setPower(ESP_PWR_LVL_P9);  // +9 dBm: the lamps did not hear the default +3 dBm (HCI 0x3E)
   client = NimBLEDevice::createClient();
   client->setConnectTimeout(10);
+  client->setConnectionParams(ITVL_MIN, ITVL_MAX, 0, TIMEOUT);
   xTaskCreatePinnedToCore(task, "mesh", 8192, nullptr, 1, nullptr, 0);
 }
 }  // namespace mesh
