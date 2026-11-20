@@ -5,6 +5,7 @@
 //                              time\t<1 if the clock is known, else 0>
 //                              lamp\t<id>\t<name>\t<on 1|0|?>\t<brightness %>\t<w|c>\t<kelvin>\t<hue>\t<sat %>\t<reported 1|0>
 //                              scene\t<index>\t<name>
+//   Light commands answer 503 while the bridge has no lamp connection (nothing is queued).
 //   POST /api/lamp   id=<id> and one of: on=0|1, b=<1..100>, k=<kelvin>, h=<0..360>&s=<0..100>
 //   POST /api/all    on=0|1
 //   POST /api/scene  i=<index>

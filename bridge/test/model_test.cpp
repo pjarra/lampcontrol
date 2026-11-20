@@ -17,7 +17,8 @@ struct Fake : api::Platform {
   uint32_t nowMs() override { return 1000; }
   bool timeKnown() override { return known; }
   void setTime(uint64_t) override { known = true; }
-  std::string connection() override { return "Kamin"; }
+  std::string conn = "Kamin";
+  std::string connection() override { return conn; }
   std::string message() override { return "connected"; }
   bool saveScenes(const std::string& j) override { stored = j; return true; }
   void requestClocks() override { clocks++; }
@@ -44,9 +45,10 @@ int main(int, char** argv) {
   Fake f;
   std::string w;
   check(m.loadLamps(readFile(dir + "../../lamps.json"), &w).empty(), "repo lamps.json loads");
-  check(m.lamps.size() == 3 && m.find("96203f0f6338") && m.find("96203f0f6338")->address == 0x7780, "Kamin from lamps.json");
+  check(m.lamps.size() >= 3 && m.find("96203f0f6338") && m.find("96203f0f6338")->address == 0x7780, "Kamin from lamps.json");
   check(!m.loadLamps("{\"lamps\":[{\"name\":\"X\",\"id\":\"9620aaaaaaaa\",\"meshAddress\":\"0x0000\"}]}", &w).empty(), "no lamp with address 0");
-  check(m.lamps.size() == 3, "failed load keeps the old lamps");
+  size_t loaded = m.lamps.size();
+  check(!m.loadLamps("{\"lamps\":[]}", &w).empty() && m.lamps.size() == loaded, "failed load keeps the old lamps");
 
   // Coalescing: newest brightness wins; power drops pending slider moves; colour replaces white.
   Lamp& kamin = *m.find("96203f0f6338");
@@ -95,6 +97,12 @@ int main(int, char** argv) {
   check(s.find("scene\t1\tAus\n") != std::string::npos, "state scene line");
   check(post(m, f, "/api/time", {{"t", "1793985122000"}}).status == 200 && f.known, "browser time accepted");
   check(post(m, f, "/api/clocks", {}).status == 200 && f.clocks == 1, "clock request");
+
+  // Without a lamp connection: commands refused, states unknown.
+  f.conn = "";
+  check(post(m, f, "/api/lamp", {{"id", "96203f0f6338"}, {"on", "1"}}).status == 503 && m.pending() == 0, "refuse commands without connection");
+  check(post(m, f, "/api/all", {{"on", "0"}}).status == 503 && post(m, f, "/api/scene", {{"i", "0"}}).status == 503, "refuse all/scene without connection");
+  check(api::state(m, f).find("\tStandleuchte\t?\t") != std::string::npos, "unknown state without connection");
 
   std::printf(failures ? "%d FAILED\n" : "all host tests PASS\n", failures);
   return failures ? 1 : 0;

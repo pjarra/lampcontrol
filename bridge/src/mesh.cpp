@@ -59,6 +59,7 @@ bool write(NimBLERemoteCharacteristic* ch, const awox::Bytes& packet) {
 
 void dropConnection() {
   ready = false;
+  { ModelGuard g; model->clearQueue(); }  // never send old commands after a reconnect
   memset(key, 0, sizeof key);
   if (client && client->isConnected()) client->disconnect();
   { Text t; connected.clear(); }

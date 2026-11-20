@@ -24,7 +24,8 @@ std::string state(Model& model, Platform& platform) {
   std::string out = "bridge\t" + (conn.empty() ? std::string("-") : conn) + "\t" + platform.message() + "\n";
   out += std::string("time\t") + (platform.timeKnown() ? "1" : "0") + "\n";
   for (auto& l : model.lamps) {
-    out += "lamp\t" + l.id + "\t" + l.name + "\t" + (l.on < 0 ? "?" : l.on ? "1" : "0") + "\t" + num(l.brightness) +
+    // Without a lamp connection the last known state may be stale: report it as unknown.
+    out += "lamp\t" + l.id + "\t" + l.name + "\t" + (l.on < 0 || conn.empty() ? "?" : l.on ? "1" : "0") + "\t" + num(l.brightness) +
            "\t" + std::string(1, l.mode) + "\t" + num(l.kelvin) + "\t" + num(l.hue) + "\t" + num(l.saturation) + "\t" +
            (l.reportedMs ? "1" : "0") + "\n";
   }
@@ -38,6 +39,10 @@ Response handle(Model& model, Platform& platform, const Request& r) {
   if (p == "/api/state") return ok(state(model, platform));
   if (p == "/api/info") return ok(platform.info());
   if (!post) return {405, "use POST"};
+  // Light commands are refused, not queued, while the bridge has no lamp connection: a queued
+  // "on" must not fire hours later when the connection comes back.
+  bool lightCommand = p == "/api/lamp" || p == "/api/all" || p == "/api/scene";
+  if (lightCommand && platform.connection().empty()) return {503, "Not sent: the bridge has no connection to the lamps."};
 
   if (p == "/api/lamp") {
     auto it = r.params.find("id");

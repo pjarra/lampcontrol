@@ -50,6 +50,7 @@ class Model {
   void statusReport(uint16_t address, bool on, uint32_t nowMs);
 
   bool popCommand(Command& out);
+  void clearQueue() { queue.clear(); }
   size_t pending() const { return queue.size(); }
 
  private:

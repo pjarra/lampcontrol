@@ -128,8 +128,9 @@ static bool refreshState(void) {
   time_t now = time(NULL);
   struct tm lt;
   localtime_r(&now, &lt);
-  if (via[0]) snprintf(status, sizeof status, "via %s  ·  updated %02d:%02d", via, lt.tm_hour, lt.tm_min);
-  else snprintf(status, sizeof status, "bridge has no lamp connection  ·  %02d:%02d", lt.tm_hour, lt.tm_min);
+  // Seconds, so every reload (Back/Home/Menu) visibly changes the line.
+  if (via[0]) snprintf(status, sizeof status, "via %s  ·  updated %02d:%02d:%02d", via, lt.tm_hour, lt.tm_min, lt.tm_sec);
+  else snprintf(status, sizeof status, "NO LAMP CONNECTION  ·  nothing is sent  ·  %02d:%02d", lt.tm_hour, lt.tm_min);
   return true;
 }
 
@@ -137,7 +138,9 @@ static bool post(const char* path, const char* body) {
   char buf[8192];
   int code = http("POST", path, body, buf, sizeof buf);
   if (code == 200) { parseState(buf); return true; }
-  snprintf(status, sizeof status, code < 0 ? "Bridge not reachable" : "Bridge error %d", code);
+  // The bridge explains refusals in plain text (e.g. 503: no lamp connection).
+  if (code < 0) snprintf(status, sizeof status, "Bridge not reachable: not sent");
+  else { buf[strcspn(buf, "\r\n")] = 0; snprintf(status, sizeof status, "%.90s", buf[0] ? buf : "Bridge error"); }
   return false;
 }
 
