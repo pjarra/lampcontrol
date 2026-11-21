@@ -28,6 +28,16 @@ cannot resolve `.local` names: use the number, and give the bridge a fixed addre
 Power it from any USB charger afterwards. Lamps come from `lamps.json` on GitHub Pages at every start
 (cached on the board), so `tools/scan-lamps.swift` stays the way to add lamps.
 
+## Updates over Wi-Fi
+
+```bash
+./ota.sh                 # builds, serves the firmware from this Mac, the bridge downloads and installs it
+```
+
+Protected by a password that `setup.py` creates in `~/.config/lampbridge/ota_password` (outside the repo)
+and stores on the board. The bridge pulls the file itself: waiting for an ArduinoOTA invitation failed
+while Bluetooth forces Wi-Fi power saving on. A failed update is shown on `/setup` after the restart.
+
 ## Without the board
 
 ```bash

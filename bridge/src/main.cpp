@@ -7,6 +7,7 @@
 #include "mesh.h"
 #include "model.h"
 #include <Arduino.h>
+#include <HTTPUpdate.h>
 #include <ESPmDNS.h>
 #include <HTTPClient.h>
 #include <LittleFS.h>
@@ -33,6 +34,30 @@ SemaphoreHandle_t modelLock;
 std::string lampsSource = "none", lastError;
 volatile bool lampsReloadRequested = true;
 bool wifiConfigured = false;
+std::string updateUrl;  // set by /api/update, run from loop()
+
+// Firmware update by download (bridge/ota.sh serves the build from the Mac), with the lamp
+// connection paused. Pulling works with Wi-Fi power saving on; waiting for an ArduinoOTA
+// invitation did not (missed packets, 1 s chunk timeouts).
+void runUpdate() {
+  std::string url = updateUrl;
+  updateUrl.clear();
+  Serial.printf("[update] downloading %s\n", url.c_str());
+  mesh::pauseForUpdate();
+  delay(1000);
+  httpUpdate.rebootOnUpdate(true);
+  std::string error;
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    WiFiClient client;
+    client.setTimeout(20);  // seconds
+    httpUpdate.update(client, url.c_str());  // restarts on success
+    error = std::string(httpUpdate.getLastErrorString().c_str()) + " (attempt " + std::to_string(attempt) + ")";
+    Serial.printf("[update] failed: %s\n", error.c_str());
+    delay(2000);
+  }
+  prefs.putString("update_err", error.c_str());  // shown in /api/info after the restart
+  ESP.restart();  // the lamp connection stays paused until restart
+}
 
 struct Guard { Guard() { xSemaphoreTake(modelLock, portMAX_DELAY); } ~Guard() { xSemaphoreGive(modelLock); } };
 // isKey first: the core would log an error line for every missing key.
@@ -100,6 +125,16 @@ struct Board : api::Platform {
   bool saveScenes(const std::string& json) override { return writeFile("/scenes.json", json); }
   void requestClocks() override { mesh::requestClocks(); }
   void requestLampsReload() override { lampsReloadRequested = true; }
+  std::string raw() override { return mesh::raw(); }
+  std::string requestUpdate(const std::string& key, const std::string& url) override {
+    std::string pass = pref("ota_pass");
+    if (pass.empty()) return "Updates are not enabled (run setup.py).";
+    if (key != pass) return "Wrong update key.";
+    if (url.rfind("http://192.168.", 0) != 0) return "Only http:// downloads from the home network.";
+    updateUrl = url;
+    prefs.remove("update_err");
+    return "";
+  }
   std::string info() override {
     char buf[64];
     time_t now = time(nullptr); struct tm lt; localtime_r(&now, &lt);
@@ -111,6 +146,7 @@ struct Board : api::Platform {
     s += "lamps: " + std::to_string(model.lamps.size()) + " from " + lampsSource + "\n";
     s += "scenes: " + std::to_string(model.scenes.size()) + "\n";
     s += mesh::info();
+    if (prefs.isKey("update_err")) s += "last failed update: " + pref("update_err") + "\n";
     s += "uptime: " + std::to_string(millis() / 60000) + " min, free memory " + std::to_string(ESP.getFreeHeap() / 1024) + " kB\n";
     return s;
   }
@@ -155,7 +191,7 @@ void console() {
     if (cmd.rfind("set ", 0) == 0) {
       size_t sp = cmd.find(' ', 4);
       std::string k = cmd.substr(4, sp - 4), v = sp == std::string::npos ? "" : unhex(cmd.substr(sp + 1));
-      const char* keys[] = {"wifi_ssid", "wifi_pass", "mesh_name", "mesh_pass", "tz", "lamps_url", "wifi_off", "ble_off"};
+      const char* keys[] = {"wifi_ssid", "wifi_pass", "mesh_name", "mesh_pass", "tz", "lamps_url", "wifi_off", "ble_off", "ota_pass"};
       bool known = false;
       for (const char* x : keys) if (k == x) { prefs.putString(x, v.c_str()); known = true; }
       if (k == "lamps_json") { known = writeFile("/lamps.json", v); }
@@ -236,6 +272,7 @@ void loop() {
     MDNS.begin(HOSTNAME);
     MDNS.addService("http", "tcp", 80);
     server.begin();
+
   } else if (!online && millis() > 20000 && !wifiWarned) {
     // Tell setup.py (and the log) why Wi-Fi does not come up.
     wifiWarned = true;
@@ -247,6 +284,7 @@ void loop() {
     Serial.println("[bridge] Wi-Fi lost, reconnecting");
   }
   if (online) {
+    if (!updateUrl.empty()) runUpdate();
     server.handleClient();
     if (lampsReloadRequested) reloadLamps();
   }

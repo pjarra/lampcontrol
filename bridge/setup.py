@@ -75,6 +75,17 @@ def main():
             print(('  ' + key + ': stored') if result.startswith('ok') else ('  ' + key + ': ' + result))
     answers.clear()
 
+    # Password for wireless updates (ota.sh); created once, kept outside the repo.
+    ota_file = os.path.expanduser('~/.config/lampbridge/ota_password')
+    if not os.path.exists(ota_file):
+        import secrets
+        os.makedirs(os.path.dirname(ota_file), mode=0o700, exist_ok=True)
+        with open(os.open(ota_file, os.O_WRONLY | os.O_CREAT, 0o600), 'w') as f:
+            f.write(secrets.token_urlsafe(18))
+    with open(ota_file) as f:
+        result = command(port, 'set ota_pass ' + f.read().strip().encode().hex())
+    print('  wireless updates: ' + ('enabled (./ota.sh)' if result.startswith('ok') else result))
+
     lamps = os.path.join(HERE, '..', 'lamps.json')
     if os.path.exists(lamps):
         with open(lamps, 'rb') as f:

@@ -14,4 +14,9 @@ std::string message();         // short status for the pages
 std::string info();            // diagnostics lines for /api/info
 void requestClocks();          // set every lamp's clock as soon as the time is known
 bool timeKnown();
+// For a firmware update: drop the lamp connection and keep the mesh task idle until restart.
+// (NimBLEDevice::deinit() hung when called here, so Bluetooth stays initialised; the update is a
+// download by the bridge, which copes with Wi-Fi power saving.)
+void pauseForUpdate();
+std::string raw();             // last status messages per lamp, decrypted (for decoding experiments)
 }

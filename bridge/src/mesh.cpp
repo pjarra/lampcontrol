@@ -29,7 +29,10 @@ NimBLEClient* client = nullptr;
 NimBLERemoteCharacteristic *pairChar = nullptr, *commandChar = nullptr, *statusChar = nullptr;
 uint8_t key[16];
 bool ready = false;
-volatile bool clocksRequested = false;
+volatile bool clocksRequested = false, paused = false, pausedAck = false;
+// Latest decrypted notification per (type, address): for working out what else status messages carry.
+struct Raw { uint32_t ms; uint8_t type; uint8_t length; uint8_t plain[16]; uint8_t tail[4]; };
+std::map<uint32_t, Raw> rawNotes;
 std::string connected, statusText = "Starting", clockReport;
 uint32_t lastWrite = 0, lastQuery = 0, notesSeen = 0, retryAt = 0, retryDelay = 5000;
 int lastClockDay = -1;
@@ -204,6 +207,7 @@ void task(void*) {
       if (lt.tm_yday != lastClockDay && lt.tm_hour * 60 + lt.tm_min >= CLOCK_HOUR * 60 + CLOCK_MINUTE) { lastClockDay = lt.tm_yday; clocksRequested = true; }
       if (clocksRequested) runClocks();
     }
+    if (paused) { if (ready) dropConnection(); pausedAck = true; delay(50); continue; }
     if (ready && !client->isConnected()) { setStatus("Connection lost"); dropConnection(); retryAt = millis() + 2000; }
     if (!ready) {
       if ((int32_t)(millis() - retryAt) >= 0) connectMesh();
@@ -213,6 +217,13 @@ void task(void*) {
     Note n;
     while (xQueueReceive(notifications, &n, 0) == pdTRUE) {
       notesSeen++;
+      if (n.length >= 17) {
+        Raw r = {millis(), n.data[0], n.length, {0}, {0}};
+        awox::attDecrypt(key, n.data + 1, r.plain);
+        for (int i = 17; i < n.length && i < 21; i++) r.tail[i - 17] = n.data[i];
+        uint32_t k = (uint32_t)r.type << 16 | (uint32_t)(r.plain[0] | r.plain[1] << 8);
+        Text t; rawNotes[k] = r;
+      }
       awox::Status s = awox::parseStatus(key, n.data, n.length);
       if (s.valid) { ModelGuard g; model->statusReport(s.address, s.on, millis()); }
     }
@@ -237,6 +248,29 @@ void task(void*) {
 
 bool timeKnown() { return time(nullptr) > 1700000000; }
 void requestClocks() { clocksRequested = true; }
+void pauseForUpdate() {
+  if (!textLock) return;  // never started
+  paused = true;
+  // Wait until the mesh task is idle: a lamp search or connection attempt (up to ~15 s) keeps the
+  // radio busy with Bluetooth, and the download then fails to connect.
+  for (int i = 0; i < 400 && !pausedAck; i++) delay(50);
+  Text t;
+  statusText = "Firmware update running";
+}
+std::string raw() {
+  if (!textLock) return "";
+  Text t;
+  std::string out = "# ms-ago type addr  decrypted block (16 bytes)  clear tail\n";
+  char line[128];
+  for (auto& e : rawNotes) {
+    const Raw& r = e.second;
+    int n = snprintf(line, sizeof line, "%7lu %02x %04x ", (unsigned long)(millis() - r.ms), r.type, (unsigned)(r.plain[0] | r.plain[1] << 8));
+    for (int i = 0; i < 16; i++) n += snprintf(line + n, sizeof line - n, "%02x%s", r.plain[i], i == 15 ? " " : "");
+    for (int i = 17; i < r.length && i < 21; i++) n += snprintf(line + n, sizeof line - n, "%02x", r.tail[i - 17]);
+    out += line; out += "\n";
+  }
+  return out;
+}
 // Callable before start() (e.g. without mesh credentials): textLock is null then.
 std::string connectedLamp() { if (!textLock) return ""; Text t; return connected; }
 std::string message() { if (!textLock) return "Bluetooth not started (mesh credentials missing?)"; Text t; return statusText; }

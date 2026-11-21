@@ -38,6 +38,7 @@ Response handle(Model& model, Platform& platform, const Request& r) {
   bool post = r.method == "POST";
   if (p == "/api/state") return ok(state(model, platform));
   if (p == "/api/info") return ok(platform.info());
+  if (p == "/api/raw") return ok(platform.raw());
   if (!post) return {405, "use POST"};
   // Light commands are refused, not queued, while the bridge has no lamp connection: a queued
   // "on" must not fire hours later when the connection comes back.
@@ -82,6 +83,11 @@ Response handle(Model& model, Platform& platform, const Request& r) {
     if (!error.empty()) return bad("Not imported: " + error);
     if (!platform.saveScenes(model.scenesJson())) return {500, "Imported, but could not be stored on the bridge."};
     return ok("Imported " + num((long)model.scenes.size()) + " scene(s)." + (warnings.empty() ? "" : " (" + warnings + ")"));
+  }
+  if (p == "/api/update") {
+    auto k = r.params.find("key"), u = r.params.find("url");
+    std::string why = platform.requestUpdate(k == r.params.end() ? "" : k->second, u == r.params.end() ? "" : u->second);
+    return why.empty() ? ok("Updating: downloading the firmware, then restarting.") : Response{403, why};
   }
   if (p == "/api/clocks") { platform.requestClocks(); return ok("Setting the clocks of all lamps, one after another (about 15 s per lamp)."); }
   if (p == "/api/lamps/reload") { platform.requestLampsReload(); return ok("Reloading lamps.json."); }

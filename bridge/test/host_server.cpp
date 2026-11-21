@@ -55,6 +55,8 @@ struct Sim : api::Platform {
   bool saveScenes(const std::string& json) override { scenesStored = json; return true; }
   void requestClocks() override { std::printf("clocks requested\n"); }
   void requestLampsReload() override { std::printf("lamps reload requested\n"); }
+  std::string raw() override { return "# simulated: no status messages\n"; }
+  std::string requestUpdate(const std::string&, const std::string&) override { return "not on the host server"; }
   std::string info() override { return "mode: host test server\nscenes stored: " + std::to_string(scenesStored.size()) + " bytes\n"; }
 };
 

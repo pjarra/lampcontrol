@@ -14,6 +14,8 @@
 //   POST /api/clocks             set every lamp's clock now
 //   POST /api/lamps/reload       fetch lamps.json again
 //   GET  /api/info               diagnostics, one "key: value" per line
+//   GET  /api/raw                last decrypted status message per lamp (decoding experiments)
+//   POST /api/update key=<update password>&url=http://<mac>/firmware.bin   (bridge/ota.sh)
 #pragma once
 #include "model.h"
 #include <map>
@@ -36,6 +38,10 @@ struct Platform {
   virtual void requestClocks() = 0;
   virtual void requestLampsReload() = 0;
   virtual std::string info() = 0;
+  virtual std::string raw() = 0;          // decoding aid: last decrypted status messages
+  // Firmware update: the bridge downloads url itself (outgoing connections work reliably, unlike
+  // waiting for an invitation while Wi-Fi power saving is on). Returns "" if accepted, else why not.
+  virtual std::string requestUpdate(const std::string& key, const std::string& url) = 0;
 };
 
 Response handle(Model& model, Platform& platform, const Request& request);

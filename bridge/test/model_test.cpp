@@ -25,6 +25,8 @@ struct Fake : api::Platform {
   void requestClocks() override { clocks++; }
   void requestLampsReload() override {}
   std::string info() override { return "x: y\n"; }
+  std::string raw() override { return ""; }
+  std::string requestUpdate(const std::string& k, const std::string&) override { return k == "secret" ? "" : "wrong key"; }
 };
 api::Response post(Model& m, Fake& f, const std::string& path, std::map<std::string, std::string> params, std::string body = "") {
   return api::handle(m, f, {"POST", path, body, params});
@@ -104,6 +106,9 @@ int main(int, char** argv) {
   check(post(m, f, "/api/lamp", {{"id", "96203f0f6338"}, {"on", "1"}}).status == 503 && m.pending() == 0, "refuse commands without connection");
   check(post(m, f, "/api/all", {{"on", "0"}}).status == 503 && post(m, f, "/api/scene", {{"i", "0"}}).status == 503, "refuse all/scene without connection");
   check(api::state(m, f).find("\tStandleuchte\t?\t") != std::string::npos, "unknown state without connection");
+
+  check(post(m, f, "/api/update", {{"key", "nope"}, {"url", "http://x/f.bin"}}).status == 403, "update needs the key");
+  check(post(m, f, "/api/update", {{"key", "secret"}, {"url", "http://x/f.bin"}}).status == 200, "update accepted with key");
 
   std::printf(failures ? "%d FAILED\n" : "all host tests PASS\n", failures);
   return failures ? 1 : 0;
