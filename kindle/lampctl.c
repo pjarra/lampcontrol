@@ -9,6 +9,7 @@
 #include "fbink.h"
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <linux/input.h>
@@ -17,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -459,6 +461,50 @@ static void render(bool flash) {
   show(flash);
 }
 
+// Sleep screen: the pictures in SLEEP_DIR (PNG or JPEG, ideally 600 x 800 grayscale), one after the
+// other, with a line saying how to wake the Kindle. E-ink keeps it without power. No pictures: the
+// lamp list stays, with "Asleep" in the status line.
+#define SLEEP_DIR "/mnt/us/lamps/sleep"
+static int byName(const void* a, const void* b) { return strcmp(a, b); }
+static bool sleepScreen(void) {
+  static unsigned next;
+  char names[32][128];
+  int n = 0;
+  DIR* d = opendir(SLEEP_DIR);
+  if (!d) return false;
+  for (struct dirent* e; n < 32 && (e = readdir(d));) {
+    const char* ext = strrchr(e->d_name, '.');
+    if (e->d_name[0] != '.' && ext && (!strcasecmp(ext, ".png") || !strcasecmp(ext, ".jpg") || !strcasecmp(ext, ".jpeg")))
+      snprintf(names[n++], sizeof names[0], "%s", e->d_name);
+  }
+  closedir(d);
+  if (!n) return false;
+  qsort(names, n, sizeof names[0], byName);
+  char path[200];
+  snprintf(path, sizeof path, SLEEP_DIR "/%s", names[next++ % n]);
+  box(0, 0, W, H, false);
+  FBInkConfig c = cfg;
+  c.no_refresh = true;
+  c.halign = CENTER;
+  c.valign = CENTER;
+  c.ignore_alpha = true;
+  if (fbink_print_image(fb, path, 0, 0, &c) < 0) return false;
+  FBInkOTConfig ot = {0};
+  ot.margins.top = H - 40;
+  ot.size_px = 18;
+  ot.is_centered = true;
+  c = cfg;
+  c.no_refresh = true;
+  c.fg_color = FG_BLACK;
+  c.bg_color = BG_WHITE;
+  c.is_bgless = true;
+  c.is_centered = true;
+  fbink_update_pen_colors(&c);
+  fbink_print_ot(fb, "Press the power button to wake", &ot, &c, NULL);
+  show(true);
+  return true;
+}
+
 // ---- Actions ---------------------------------------------------------------------------------------
 static void lampCmd(int i, const char* what) {
   char body[96];
@@ -647,7 +693,7 @@ int main(int argc, char** argv) {
     if (key == E_SLEEP) {
       asleepShown = true;
       view = V_LIST;
-      render(false);
+      if (!sleepScreen()) render(false);
       continue;
     }
     if (key == E_WAKE) {
@@ -680,7 +726,7 @@ int main(int argc, char** argv) {
       continue;
     }
     touchSleepTimer();
-    if (asleepShown) { asleepShown = false; render(false); }  // a key got through: evidently awake
+    if (asleepShown) { asleepShown = false; render(true); }  // a key got through: evidently awake
     if (key == K_KBD) {
       long now = time(NULL);
       if (now < quitArmedUntil) break;
