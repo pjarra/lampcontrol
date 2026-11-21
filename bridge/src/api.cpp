@@ -30,6 +30,11 @@ std::string state(Model& model, Platform& platform) {
            (l.reportedMs ? "1" : "0") + "\t" + (l.lightReported ? "1" : "0") + "\n";
   }
   for (size_t i = 0; i < model.scenes.size(); i++) out += "scene\t" + num((long)i) + "\t" + model.scenes[i].name + "\n";
+  for (size_t i = 0; i < model.presets.size(); i++) {
+    const Preset& p = model.presets[i];
+    out += "preset\t" + num((long)i) + "\t" + p.name + "\t" + (p.colour ? "c" : "w") + "\t" + num(p.kelvin) + "\t" +
+           num(p.hue) + "\t" + num(p.saturation) + "\n";
+  }
   return out;
 }
 
@@ -42,7 +47,7 @@ Response handle(Model& model, Platform& platform, const Request& r) {
   if (!post) return {405, "use POST"};
   // Light commands are refused, not queued, while the bridge has no lamp connection: a queued
   // "on" must not fire hours later when the connection comes back.
-  bool lightCommand = p == "/api/lamp" || p == "/api/all" || p == "/api/scene";
+  bool lightCommand = p == "/api/lamp" || p == "/api/all" || p == "/api/scene" || p == "/api/group" || p == "/api/scene/store";
   if (lightCommand && platform.connection().empty()) return {503, "Not sent: the bridge has no connection to the lamps."};
 
   if (p == "/api/lamp") {
@@ -56,7 +61,38 @@ Response handle(Model& model, Platform& platform, const Request& r) {
     else if (has(r, "h")) {
       if (!intParam(r, "h", 0, 360, h) || !intParam(r, "s", 0, 100, s)) return bad("h must be 0-360 and s 0-100");
       model.colour(*lamp, (int)h, (int)s);
+    } else if (has(r, "preset")) {
+      if (!intParam(r, "preset", 0, 99, v) || !model.applyPreset(*lamp, (size_t)v)) return bad("unknown preset");
     } else return bad("nothing to do");
+    return ok(state(model, platform));
+  }
+  if (p == "/api/group") {  // all lamps that are on
+    long v, h, s;
+    int n;
+    if (has(r, "on")) { if (!intParam(r, "on", 0, 0, v)) return bad("only on=0 (switch them off)"); n = model.groupPower(false); }
+    else if (has(r, "b")) { if (!intParam(r, "b", 1, 100, v)) return bad("b must be 1-100"); n = model.groupBrightness((int)v); }
+    else if (has(r, "k")) { if (!intParam(r, "k", 2200, 6600, v)) return bad("k must be 2200-6600"); n = model.groupWhite((int)v); }
+    else if (has(r, "h")) {
+      if (!intParam(r, "h", 0, 360, h) || !intParam(r, "s", 0, 100, s)) return bad("h must be 0-360 and s 0-100");
+      n = model.groupColour((int)h, (int)s);
+    } else if (has(r, "preset")) {
+      if (!intParam(r, "preset", 0, 99, v) || v >= (long)model.presets.size()) return bad("unknown preset");
+      n = model.groupPreset((size_t)v);
+    } else return bad("nothing to do");
+    if (n == 0) return bad("No lamp is on.");
+    return ok(state(model, platform));
+  }
+  if (p == "/api/scene/store") {
+    auto it = r.params.find("name");
+    std::string why = model.storeScene(it == r.params.end() ? "" : it->second);
+    if (!why.empty()) return bad(why);
+    if (!platform.saveScenes(model.scenesJson())) return {500, "Stored, but could not be saved on the bridge."};
+    return ok(state(model, platform));
+  }
+  if (p == "/api/scene/delete") {
+    long i;
+    if (!intParam(r, "i", 0, 999, i) || !model.deleteScene((size_t)i)) return bad("unknown scene");
+    if (!platform.saveScenes(model.scenesJson())) return {500, "Deleted, but could not be saved on the bridge."};
     return ok(state(model, platform));
   }
   if (p == "/api/all") {
@@ -82,7 +118,8 @@ Response handle(Model& model, Platform& platform, const Request& r) {
     std::string error = model.loadScenes(r.body, &warnings);
     if (!error.empty()) return bad("Not imported: " + error);
     if (!platform.saveScenes(model.scenesJson())) return {500, "Imported, but could not be stored on the bridge."};
-    return ok("Imported " + num((long)model.scenes.size()) + " scene(s)." + (warnings.empty() ? "" : " (" + warnings + ")"));
+    return ok("Imported: " + num((long)model.scenes.size()) + " scene(s), " + num((long)model.presets.size()) + " preset(s)." +
+              (warnings.empty() ? "" : " (" + warnings + ")"));
   }
   if (p == "/api/update") {
     auto k = r.params.find("key"), u = r.params.find("url");

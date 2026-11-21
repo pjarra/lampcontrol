@@ -6,12 +6,17 @@
 //                              lamp\t<id>\t<name>\t<on 1|0|?>\t<brightness %>\t<w|c>\t<kelvin>\t<hue>\t<sat %>\t<reported 1|0>\t<light reported 1|0>
 //                              (light reported: brightness/white/colour come from the lamp's own status)
 //                              scene\t<index>\t<name>
+//                              preset\t<index>\t<name>\t<w|c>\t<kelvin>\t<hue>\t<sat %>
 //   Light commands answer 503 while the bridge has no lamp connection (nothing is queued).
 //   POST /api/lamp   id=<id> and one of: on=0|1, b=<1..100>, k=<kelvin>, h=<0..360>&s=<0..100>
+//        (or preset=<index>)
+//   POST /api/group  (all lamps that are on) on=0, b=, k=, h=&s=, or preset=<index>
+//   POST /api/scene/store  name=<name>   a scene from the lamps' current state (same name: replaced)
+//   POST /api/scene/delete i=<index>
 //   POST /api/all    on=0|1
 //   POST /api/scene  i=<index>
 //   POST /api/time   t=<ms since 1970>   (from a browser, when the bridge has no internet time yet)
-//   POST /api/scenes <settings file as the request body, text/plain>
+//   POST /api/scenes <settings file as the request body, text/plain>: its scenes and/or presets
 //   POST /api/clocks             set every lamp's clock now
 //   POST /api/lamps/reload       fetch lamps.json again
 //   GET  /api/info               diagnostics, one "key: value" per line

@@ -29,8 +29,9 @@ a { color: inherit; }
 </div>
 <div class="card">
   <h2>Scenes</h2>
-  <p class="small">Import the scenes from a settings file exported by the Lamp Control page (<em>Settings file → Export file</em>).
-    This replaces the bridge's scenes; schedules in the file are ignored.</p>
+  <p class="small">Import a settings file exported by the Lamp Control page (<em>Settings file → Export file</em>). Its
+    scenes and/or <code>presets</code> replace the bridge's; schedules in it are ignored. Presets are named light settings for the
+    Kindle, e.g. <code>"presets": [{"name": "Evening", "white": 2200}, {"name": "Red", "colour": {"hue": 5, "saturation": 90}}]</code>.</p>
   <button class="primary" id="pick">Import settings file…</button><input id="file" type="file" accept=".json,application/json" hidden>
 </div>
 <div class="card">

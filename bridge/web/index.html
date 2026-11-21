@@ -32,7 +32,8 @@ footer a { color: inherit; }
 <body><main>
 <h1>Lamps</h1>
 <div id="msg">Loading…</div>
-<div id="scenes" class="card" hidden><div class="row scenes"></div></div>
+<div id="scenes" class="card"><div class="row scenes"></div>
+  <div class="row" style="margin-top:8px"><button id="store">Save current as scene…</button></div></div>
 <div id="lamps"></div>
 <div class="card row"><button class="primary" data-all="0">All off</button><button data-all="1">All on</button></div>
 <footer><a href="/setup">Bridge settings</a> · <a href="/k">Kindle page</a></footer>
@@ -40,7 +41,7 @@ footer a { color: inherit; }
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-let lamps = [], scenes = [], timeSent = false, building = '';
+let lamps = [], scenes = [], presets = [], timeSent = false, building = '';
 
 async function call(path, body) {
   const res = await fetch(path, body === undefined ? {} :
@@ -50,13 +51,14 @@ async function call(path, body) {
   return text;
 }
 function parse(text) {
-  const s = {lamps: [], scenes: [], bridge: '-', message: '', time: true};
+  const s = {lamps: [], scenes: [], presets: [], bridge: '-', message: '', time: true};
   for (const row of text.split('\n')) {
     const f = row.split('\t');
     if (f[0] === 'bridge') { s.bridge = f[1]; s.message = f[2]; }
     else if (f[0] === 'time') s.time = f[1] === '1';
     else if (f[0] === 'lamp') s.lamps.push({id: f[1], name: f[2], on: f[3], b: +f[4], mode: f[5], k: +f[6], h: +f[7], s: +f[8]});
     else if (f[0] === 'scene') s.scenes.push({i: f[1], name: f[2]});
+    else if (f[0] === 'preset') s.presets.push({i: f[1], name: f[2]});
   }
   return s;
 }
@@ -70,15 +72,18 @@ function build() {
       <div class="row mode"><button data-mode="w">White</button><button data-mode="c">Colour</button></div>
       <div class="white"><label>White <output class="o-k"></output></label><input class="k" type="range" min="2200" max="6600" step="50"></div>
       <div class="colour"><label>Hue <output class="o-h"></output></label><input class="h" type="range" min="0" max="360">
-      <label>Saturation <output class="o-s"></output></label><input class="s" type="range" min="0" max="100"></div>`;
+      <label>Saturation <output class="o-s"></output></label><input class="s" type="range" min="0" max="100"></div>
+      <div class="row mode presets"></div>`;
+    card.querySelector('.presets').replaceChildren(...presets.map(p =>
+      Object.assign(document.createElement('button'), {textContent: p.name, dataset: {preset: p.i}})));
     card.querySelector('h2').textContent = l.name;
     return card;
   }));
 }
 function show(text) {
   const s = parse(text);
-  lamps = s.lamps; scenes = s.scenes;
-  const ids = lamps.map(l => l.id).join();
+  lamps = s.lamps; scenes = s.scenes; presets = s.presets;
+  const ids = lamps.map(l => l.id).join() + '|' + presets.map(p => p.name).join();
   if (ids !== building) { building = ids; build(); }
   for (const l of lamps) {
     const card = document.querySelector(`.card[data-id="${l.id}"]`), q = c => card.querySelector('.' + c);
@@ -99,7 +104,7 @@ function show(text) {
     box.dataset.names = scenes.map(x => x.name).join('\n');
     box.replaceChildren(...scenes.map(x => Object.assign(document.createElement('button'), {textContent: x.name, onclick: () => send('/api/scene', {i: x.i})})));
   }
-  $('scenes').hidden = !scenes.length;
+
   $('msg').textContent = (s.bridge === '-' ? 'Not connected to the lamps' : 'Connected via ' + s.bridge) + (s.message ? ' · ' + s.message : '');
   if (!s.time && !timeSent) { timeSent = true; call('/api/time', {t: Date.now()}).catch(() => {}); }
 }
@@ -125,6 +130,11 @@ document.addEventListener('click', e => {
   const card = b.closest('.card[data-id]');
   if (b.dataset.all) send('/api/all', {on: b.dataset.all});
   else if (b.dataset.on) send('/api/lamp', {id: card.dataset.id, on: b.dataset.on});
+  else if (b.dataset.preset) send('/api/lamp', {id: card.dataset.id, preset: b.dataset.preset});
+  else if (b.id === 'store') {
+    const name = prompt('Name for a scene with the lamps as they are now:');
+    if (name) send('/api/scene/store', {name});
+  }
   else if (b.dataset.mode === 'w') send('/api/lamp', {id: card.dataset.id, k: card.querySelector('.k').value});
   else if (b.dataset.mode === 'c') send('/api/lamp', {id: card.dataset.id, h: card.querySelector('.h').value, s: card.querySelector('.s').value});
 });

@@ -2,14 +2,13 @@
 //
 //   lampctl [bridge-address]          (default 192.168.8.146)
 //
-// Draws scenes, lamps and "All off" with FBInk (TrueType, the Kindle's own Helvetica) and reads the
-// buttons from /dev/input. Up/down (and the page buttons) move the selection, the 5-way centre
-// switches (scene: apply, lamp: on/off), left/right step a lamp's brightness, Menu redraws with a
-// full refresh, the keyboard key quits. The state is fetched every 30 s and after every action.
-// HTTP API and its plain-text format: ../bridge/src/api.h.
+// Pages (page buttons switch): Lamps, Status, Help. Status line at the bottom. Buttons, everywhere:
+//   up/down select · left/right change the selected value · centre switch/apply · Menu details
+//   Back close/return to Lamps · Home reload with a full refresh · keyboard key twice: quit
+// Drawn with FBInk (the Kindle's Helvetica); HTTP API and its plain-text format: ../bridge/src/api.h.
 #include "fbink.h"
 #include <arpa/inet.h>
-#include <errno.h>
+#include <ctype.h>
 #include <fcntl.h>
 #include <linux/input.h>
 #include <netinet/in.h>
@@ -25,36 +24,34 @@
 #define FONT_DIR "/usr/java/lib/fonts/"
 #define W 600
 #define H 800
-#define MAX_ITEMS 40
+#define MAXN 40
 
-enum { KEY_UP_ = 103, KEY_DOWN_ = 108, KEY_LEFT_ = 105, KEY_RIGHT_ = 106, KEY_PRESS = 194, KEY_MENU_ = 139,
-       KEY_BACK_ = 158, KEY_HOME_ = 102, KEY_KBD_ = 29 };
-// Page buttons (left/right side, forward/back); codes vary between K4 units, all move the selection.
+enum { K_UP = 103, K_DOWN = 108, K_LEFT = 105, K_RIGHT = 106, K_PRESS = 194, K_MENU = 139, K_BACK = 158,
+       K_HOME = 102, K_KBD = 29 };
 static const int PAGE_FWD[] = {191, 109}, PAGE_BACK[] = {193, 104};
 
-typedef enum { SCENE, LAMP, ALL_OFF } Kind;
-// brightnessKnown: the bridge only knows a lamp's brightness after setting it; until this remote
-// changes it, only on/off is shown.
-typedef struct { Kind kind; char id[16]; char name[64]; int on; int brightness; bool brightnessKnown; } Item;
+// ---- State from the bridge -------------------------------------------------------------------------
+typedef struct { char id[16]; char name[64]; int on; int b; char mode; int k, h, s; bool light; } Lamp;
+typedef struct { char idx[8]; char name[64]; } Scene;
+typedef struct { char idx[8]; char name[32]; char mode; int k, h, s; } Preset;
+static Lamp lamps[MAXN];
+static Scene scenes[MAXN];
+static Preset presets[MAXN];
+static int nLamps, nScenes, nPresets;
+static char bridgeHost[64] = "192.168.8.146", via[64], clockText[8], message[128];
+static bool reachable;
 
-static Item items[MAX_ITEMS];
-static int count = 0, selected = 0, first = 0, renders = 0;
-static char bridgeHost[64] = "192.168.8.146", status[96] = "", via[64] = "", clockText[16] = "";
-static int fb = -1;
-static FBInkConfig cfg;
-
-// ---- HTTP (plain sockets; the bridge closes the connection after each response) -----------------
 static int http(const char* method, const char* path, const char* body, char* out, size_t outSize) {
   int s = socket(AF_INET, SOCK_STREAM, 0);
   if (s < 0) return -1;
-  struct timeval tv = {5, 0};
+  struct timeval tv = {6, 0};
   setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
   setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
   struct sockaddr_in a = {0};
   a.sin_family = AF_INET;
   a.sin_port = htons(80);
   if (inet_pton(AF_INET, bridgeHost, &a.sin_addr) != 1 || connect(s, (struct sockaddr*)&a, sizeof a) != 0) { close(s); return -1; }
-  char req[512];
+  char req[768];
   int n = body ? snprintf(req, sizeof req, "%s %s HTTP/1.0\r\nHost: %s\r\nContent-Type: application/x-www-form-urlencoded\r\n"
                                            "Content-Length: %zu\r\n\r\n%s", method, path, bridgeHost, strlen(body), body)
                : snprintf(req, sizeof req, "%s %s HTTP/1.0\r\nHost: %s\r\n\r\n", method, path, bridgeHost);
@@ -70,83 +67,73 @@ static int http(const char* method, const char* path, const char* body, char* ou
   out[got] = 0;
   int code = 0;
   if (sscanf(out, "HTTP/%*s %d", &code) != 1) return -1;
-  char* bodyStart = strstr(out, "\r\n\r\n");
-  if (bodyStart) memmove(out, bodyStart + 4, strlen(bodyStart + 4) + 1);
+  char* start = strstr(out, "\r\n\r\n");
+  if (start) memmove(out, start + 4, strlen(start + 4) + 1);
   return code;
 }
 
-// ---- State: "bridge\t<via>\t<msg>", "lamp\t<id>\t<name>\t<on>\t<b>...", "scene\t<i>\t<name>" ---------
-static void parseState(char* text) {
-  Item next[MAX_ITEMS];
-  int n = 0, scenes = 0;
-  // Scenes first, then lamps, then "All off" (the bridge lists lamps before scenes).
-  for (int pass = 0; pass < 2; pass++) {
-    char copy[8192];
-    snprintf(copy, sizeof copy, "%s", text);
-    for (char* line = strtok(copy, "\n"); line && n < MAX_ITEMS - 1; line = strtok(NULL, "\n")) {
-      char* f[10] = {0};
-      int k = 0;
-      for (char *p = line, *t; k < 10 && (t = strsep(&p, "\t")); ) f[k++] = t;
-      if (pass == 0 && k >= 3 && !strcmp(f[0], "scene")) {
-        Item it = {.kind = SCENE};
-        snprintf(it.id, sizeof it.id, "%s", f[1]);
-        snprintf(it.name, sizeof it.name, "%s", f[2]);
-        next[n++] = it; scenes++;
-      } else if (pass == 1 && k >= 5 && !strcmp(f[0], "lamp")) {
-        Item it = {.kind = LAMP};
-        snprintf(it.id, sizeof it.id, "%s", f[1]);
-        snprintf(it.name, sizeof it.name, "%s", f[2]);
-        it.on = f[3][0] == '1' ? 1 : f[3][0] == '0' ? 0 : -1;
-        it.brightness = atoi(f[4]);
-        next[n++] = it;
-      } else if (pass == 0 && k >= 3 && !strcmp(f[0], "time") && f[1][0] == '1') {
-        snprintf(clockText, 6, "%s", f[2]);  // HH:MM from the bridge (the Kindle's clock is off)
-      } else if (pass == 0 && k >= 3 && !strcmp(f[0], "bridge")) {
-        snprintf(via, sizeof via, "%s", strcmp(f[1], "-") ? f[1] : "");
-      }
+static void parseState(const char* text) {
+  static char copy[12000];
+  snprintf(copy, sizeof copy, "%s", text);
+  nLamps = nScenes = nPresets = 0;
+  via[0] = clockText[0] = 0;
+  for (char* line = strtok(copy, "\n"); line; line = strtok(NULL, "\n")) {
+    char* f[12] = {0};
+    int k = 0;
+    for (char *p = line, *t; k < 12 && (t = strsep(&p, "\t")); ) f[k++] = t;
+    if (k >= 2 && !strcmp(f[0], "bridge")) snprintf(via, sizeof via, "%s", strcmp(f[1], "-") ? f[1] : "");
+    else if (k >= 3 && !strcmp(f[0], "time") && f[1][0] == '1') snprintf(clockText, 6, "%s", f[2]);
+    else if (k >= 9 && !strcmp(f[0], "lamp") && nLamps < MAXN) {
+      Lamp* l = &lamps[nLamps++];
+      snprintf(l->id, sizeof l->id, "%s", f[1]);
+      snprintf(l->name, sizeof l->name, "%s", f[2]);
+      l->on = f[3][0] == '1' ? 1 : f[3][0] == '0' ? 0 : -1;
+      l->b = atoi(f[4]); l->mode = f[5][0]; l->k = atoi(f[6]); l->h = atoi(f[7]); l->s = atoi(f[8]);
+      l->light = k >= 11 && f[10][0] == '1';
+    } else if (k >= 3 && !strcmp(f[0], "scene") && nScenes < MAXN) {
+      snprintf(scenes[nScenes].idx, sizeof scenes[0].idx, "%s", f[1]);
+      snprintf(scenes[nScenes].name, sizeof scenes[0].name, "%s", f[2]);
+      nScenes++;
+    } else if (k >= 7 && !strcmp(f[0], "preset") && nPresets < MAXN) {
+      Preset* p = &presets[nPresets++];
+      snprintf(p->idx, sizeof p->idx, "%s", f[1]);
+      snprintf(p->name, sizeof p->name, "%s", f[2]);
+      p->mode = f[3][0]; p->k = atoi(f[4]); p->h = atoi(f[5]); p->s = atoi(f[6]);
     }
   }
-  Item all = {.kind = ALL_OFF};
-  snprintf(all.name, sizeof all.name, "All off");
-  next[n++] = all;
-  for (int i = 0; i < n; i++)
-    for (int j = 0; j < count; j++)
-      if (next[i].kind == LAMP && items[j].kind == LAMP && !strcmp(next[i].id, items[j].id)) next[i].brightnessKnown = items[j].brightnessKnown;
-  // Keep the selection on the same entry if the list changed.
-  Item old = count ? items[selected] : (Item){0};
-  memcpy(items, next, sizeof(Item) * (size_t)n);
-  count = n;
-  if (selected >= count) selected = count - 1;
-  for (int i = 0; i < count; i++)
-    if (items[i].kind == old.kind && !strcmp(items[i].id, old.id) && !strcmp(items[i].name, old.name)) selected = i;
-  (void)scenes;
 }
 
-static bool refreshState(void) {
-  char buf[8192];
+static bool refresh(void) {
+  static char buf[12000];
   int code = http("GET", "/api/state", NULL, buf, sizeof buf);
-  if (code != 200) { snprintf(status, sizeof status, "Bridge not reachable"); return false; }
-  parseState(buf);
-  // The bridge's time (internet time); a reload counter makes every Back/Home/Menu visible.
-  static int reloads = 0;
-  reloads++;
-  if (via[0]) snprintf(status, sizeof status, "via %s  ·  %s  ·  #%d", via, clockText[0] ? clockText : "--:--", reloads % 100);
-  else snprintf(status, sizeof status, "NO LAMP CONNECTION  ·  nothing is sent  ·  %s", clockText[0] ? clockText : "--:--");
-  return true;
+  reachable = code == 200;
+  if (reachable) parseState(buf);
+  return reachable;
 }
 
+// POST; on success the reply is the new state. On failure the bridge's reason becomes the message.
 static bool post(const char* path, const char* body) {
-  char buf[8192];
+  static char buf[12000];
   int code = http("POST", path, body, buf, sizeof buf);
-  if (code == 200) { parseState(buf); return true; }
-  // The bridge explains refusals in plain text (e.g. 503: no lamp connection).
-  if (code < 0) snprintf(status, sizeof status, "Bridge not reachable: not sent");
-  else { buf[strcspn(buf, "\r\n")] = 0; snprintf(status, sizeof status, "%.90s", buf[0] ? buf : "Bridge error"); }
+  if (code == 200) { parseState(buf); reachable = true; message[0] = 0; return true; }
+  if (code < 0) { reachable = false; snprintf(message, sizeof message, "Bridge not reachable: not sent"); }
+  else { buf[strcspn(buf, "\r\n")] = 0; snprintf(message, sizeof message, "%.120s", buf[0] ? buf : "Bridge error"); }
   return false;
 }
 
-// ---- Drawing -------------------------------------------------------------------------------------
-enum { TOP = 120, ROW = 76, HEADER = 34, BOTTOM = 40 };
+static void urlencode(const char* in, char* out, size_t size) {
+  size_t o = 0;
+  for (const unsigned char* p = (const unsigned char*)in; *p && o + 4 < size; p++) {
+    if (isalnum(*p) || *p == '-' || *p == '_' || *p == '.') out[o++] = (char)*p;
+    else o += (size_t)snprintf(out + o, size - o, "%%%02X", *p);
+  }
+  out[o] = 0;
+}
+
+// ---- Drawing ---------------------------------------------------------------------------------------
+static int fb = -1;
+static FBInkConfig cfg;
+static int renders;
 
 static void text(const char* s, int x, int y, int px, bool bold, bool white) {
   FBInkOTConfig ot = {0};
@@ -156,8 +143,8 @@ static void text(const char* s, int x, int y, int px, bool bold, bool white) {
   ot.style = bold ? FNT_BOLD : FNT_REGULAR;
   FBInkConfig c = cfg;
   c.no_refresh = true;
-  // White text: draw black-on-white inverted (its box is black, matching the selection bar).
-  // A white fg_color with is_bgless rendered nothing on the K4.
+  // White text: black-on-white inverted (its box is black, matching the selection bar); a white
+  // fg_color with is_bgless rendered nothing on the K4.
   c.fg_color = FG_BLACK;
   c.bg_color = BG_WHITE;
   c.is_inverted = white;
@@ -165,7 +152,6 @@ static void text(const char* s, int x, int y, int px, bool bold, bool white) {
   fbink_update_pen_colors(&c);  // FBInk takes colours at init; changes need this
   fbink_print_ot(fb, s, &ot, &c, NULL);
 }
-
 static void box(int x, int y, int w, int h, bool black) {
   FBInkConfig c = cfg;
   c.no_refresh = true;
@@ -174,87 +160,366 @@ static void box(int x, int y, int w, int h, bool black) {
   FBInkRect r = {(unsigned short)x, (unsigned short)y, (unsigned short)w, (unsigned short)h};
   fbink_cls(fb, &c, &r, false);
 }
-
-static void stateText(const Item* it, char* out, size_t size) {
-  if (it->kind != LAMP) { out[0] = 0; return; }
-  if (it->on == 1 && it->brightnessKnown) snprintf(out, size, "on  %d %%", it->brightness);
-  else if (it->on == 1) snprintf(out, size, "on");
-  else snprintf(out, size, it->on == 0 ? "off" : "?");
-}
-
-// Rows that fit; the list scrolls so that the selection stays visible.
-static int visibleRows(void) { return (H - TOP - BOTTOM - 2 * HEADER) / ROW; }
-
-static void render(bool flash) {
-  box(0, 0, W, H, false);
-  text("Lamps", 30, 28, 52, true, false);
-  text(status, 30, 92, 20, false, false);
-  int rows = visibleRows();
-  if (selected < first) first = selected;
-  if (selected >= first + rows) first = selected - rows + 1;
-  int y = TOP;
-  Kind section = (Kind)-1;
-  for (int i = first; i < count && i < first + rows; i++) {
-    const Item* it = &items[i];
-    Kind sec = it->kind == ALL_OFF ? LAMP : it->kind;
-    if (sec != section) {
-      section = sec;
-      if (it->kind != ALL_OFF) { text(sec == SCENE ? "SCENES" : "LAMPS", 30, y + 6, 20, true, false); y += HEADER; }
-    }
-    bool sel = i == selected;
-    if (sel) box(14, y, W - 28, ROW - 8, true);
-    else box(14, y + ROW - 9, W - 28, 1, true);  // thin separator
-    text(it->name, 34, y + 16, 36, it->kind == ALL_OFF, sel);
-    char st[32];
-    stateText(it, st, sizeof st);
-    if (st[0]) text(st, 400, y + 20, 30, false, sel);
-    y += ROW;
-  }
-  if (first > 0) text("more above", 450, TOP - 30, 20, false, false);
-  if (first + rows < count) text("more below", 450, H - BOTTOM - 8, 20, false, false);
-  text("left/right: brightness   centre: switch   keyboard key: quit", 30, H - 30, 17, false, false);
-  // Partial refresh normally; a flashing full refresh every 15 renders (or on Menu) clears e-ink ghosting.
+static void show(bool flash) {
   FBInkConfig c = cfg;
-  c.is_flashing = flash || (++renders % 15 == 0);
+  c.is_flashing = flash || (++renders % 15 == 0);  // a flash now and then clears e-ink ghosting
   c.wfm_mode = WFM_GC16;
   fbink_refresh(fb, 0, 0, W, H, &c);
 }
 
+enum { ROW = 64, LIST_TOP = 16, FOOTER = 52 };
+// A list row: label left, value at x=330; selected rows are white on black.
+static void row(int y, const char* label, const char* value, bool selected, bool bold) {
+  if (selected) box(10, y, W - 20, ROW - 6, true);
+  else box(10, y + ROW - 7, W - 20, 1, true);
+  text(label, 26, y + 14, 32, bold, selected);
+  if (value && value[0]) text(value, 330, y + 18, 26, false, selected);
+}
+static void heading(int y, const char* s) { text(s, 26, y + 8, 18, true, false); }
+
+// ---- Values ----------------------------------------------------------------------------------------
+static const char* presetName(char mode, int k, int h, int s) {
+  for (int i = 0; i < nPresets; i++) {
+    const Preset* p = &presets[i];
+    if (p->mode != mode) continue;
+    if (mode == 'w' && abs(p->k - k) <= 60) return p->name;
+    if (mode == 'c' && abs(p->h - h) <= 4 && abs(p->s - s) <= 4) return p->name;
+  }
+  return NULL;
+}
+static void lightText(const Lamp* l, char* out, size_t size) {
+  const char* p = presetName(l->mode, l->k, l->h, l->s);
+  if (p) snprintf(out, size, "%s", p);
+  else if (l->mode == 'c') snprintf(out, size, "colour %d°", l->h);
+  else snprintf(out, size, "%d K", l->k);
+}
+static void lampValue(const Lamp* l, char* out, size_t size) {
+  if (l->on < 0) { snprintf(out, size, "?"); return; }
+  if (l->on == 0) { snprintf(out, size, "off"); return; }
+  if (!l->light) { snprintf(out, size, "on"); return; }
+  char light[40];
+  lightText(l, light, sizeof light);
+  snprintf(out, size, "%d %%  %s", l->b, light);
+}
+static const int B_STEPS[] = {10, 20, 30, 45, 60, 80, 100};    // 5 % turned the Sofa lamp red
+static const int K_STEPS[] = {2200, 2700, 3000, 3500, 4000, 5000, 6500};
+static int step(const int* steps, int n, int current, int dir) {
+  if (dir > 0) { for (int i = 0; i < n; i++) if (steps[i] > current) return steps[i]; return steps[n - 1]; }
+  for (int i = n - 1; i >= 0; i--) if (steps[i] < current) return steps[i];
+  return steps[0];
+}
+
+// ---- Views -----------------------------------------------------------------------------------------
+typedef enum { V_LIST, V_DETAILS, V_KEYBOARD, V_CONFIRM } View;
+typedef enum { R_SCENE, R_LAMP, R_GROUP, R_STORE, R_ALLOFF } RowKind;
+typedef struct { RowKind kind; int index; } Row;
+static View view = V_LIST;
+static int page;              // 0 Lamps, 1 Status, 2 Help
+static int sel, first;        // list selection and scroll
+static Row rows[MAXN * 2 + 4];
+static int nRows;
+static int detSel;            // details: 0 power, 1 brightness, 2 white, 3 preset
+static Row detRow;            // what the details screen is for (lamp or group)
+static int presetCursor;      // details: preset shown on the preset row
+static char kbText[40];
+static int kbR, kbC;
+static long quitArmedUntil;
+
+static void buildRows(void) {
+  nRows = 0;
+  for (int i = 0; i < nScenes; i++) rows[nRows++] = (Row){R_SCENE, i};
+  for (int i = 0; i < nLamps; i++) rows[nRows++] = (Row){R_LAMP, i};
+  rows[nRows++] = (Row){R_GROUP, 0};
+  rows[nRows++] = (Row){R_STORE, 0};
+  rows[nRows++] = (Row){R_ALLOFF, 0};
+  if (sel >= nRows) sel = nRows - 1;
+}
+static int lampsOn(void) { int n = 0; for (int i = 0; i < nLamps; i++) if (lamps[i].on == 1) n++; return n; }
+
+static void footer(void) {
+  box(0, H - FOOTER, W, 1, true);
+  char line[200];
+  long now = time(NULL);
+  if (now < quitArmedUntil) snprintf(line, sizeof line, "Press the keyboard key again to quit");
+  else if (message[0]) snprintf(line, sizeof line, "%s", message);
+  else if (!reachable) snprintf(line, sizeof line, "Bridge not reachable  ·  page %d/3", page + 1);
+  else if (!via[0]) snprintf(line, sizeof line, "NO LAMP CONNECTION: nothing is sent  ·  %s", clockText);
+  else snprintf(line, sizeof line, "via %s  ·  %s  ·  page %d/3", via, clockText[0] ? clockText : "--:--", page + 1);
+  text(line, 20, H - FOOTER + 14, 20, false, false);
+}
+
+static void drawLamps(void) {
+  buildRows();
+  int area = H - FOOTER - LIST_TOP - 10;
+  // Rows plus headings must fit; scroll so the selection stays visible.
+  int fit = (area - 2 * 34) / ROW;
+  if (sel < first) first = sel;
+  if (sel >= first + fit) first = sel - fit + 1;
+  int y = LIST_TOP;
+  int lastSection = -1;
+  for (int i = first; i < nRows && i < first + fit; i++) {
+    Row r = rows[i];
+    int section = r.kind == R_SCENE ? 0 : r.kind == R_LAMP || r.kind == R_GROUP ? 1 : 2;
+    if (section != lastSection && section < 2) { heading(y, section == 0 ? "SCENES" : "LAMPS"); y += 34; }
+    lastSection = section;
+    bool s = i == sel;
+    char value[64] = "";
+    if (r.kind == R_SCENE) row(y, scenes[r.index].name, "", s, false);
+    else if (r.kind == R_LAMP) { lampValue(&lamps[r.index], value, sizeof value); row(y, lamps[r.index].name, value, s, false); }
+    else if (r.kind == R_GROUP) { snprintf(value, sizeof value, "%d on", lampsOn()); row(y, "Lamps that are on", value, s, false); }
+    else if (r.kind == R_STORE) row(y, "Store current as scene", "", s, false);
+    else row(y, "All off", "", s, true);
+    y += ROW;
+  }
+  if (first > 0) text("more above", 470, 0, 16, false, false);
+  if (first + fit < nRows) text("more below", 470, H - FOOTER - 22, 16, false, false);
+}
+
+static void drawStatus(void) {
+  text("Status", 26, 14, 40, true, false);
+  int y = 80;
+  text("Lamp", 26, y, 20, true, false); text("Power", 290, y, 20, true, false);
+  text("Bright.", 370, y, 20, true, false); text("Light", 460, y, 20, true, false);
+  y += 34;
+  for (int i = 0; i < nLamps; i++) {
+    const Lamp* l = &lamps[i];
+    char b[16] = "-", light[40] = "-";
+    if (l->light) { snprintf(b, sizeof b, "%d %%", l->b); lightText(l, light, sizeof light); }
+    text(l->name, 26, y, 22, false, false);
+    text(l->on < 0 ? "?" : l->on ? "on" : "off", 290, y, 22, false, false);
+    text(b, 370, y, 22, false, false);
+    text(light, 460, y, 22, false, false);
+    box(26, y + 40, W - 52, 1, true);
+    y += 50;
+  }
+  y += 16;
+  char line[160];
+  snprintf(line, sizeof line, "Bridge %s: %s", bridgeHost, !reachable ? "not reachable" : via[0] ? "connected" : "no lamp connection");
+  text(line, 26, y, 20, false, false);
+  if (via[0]) { snprintf(line, sizeof line, "Connected through %s", via); text(line, 26, y + 30, 20, false, false); }
+  snprintf(line, sizeof line, "%d scene(s), %d preset(s)", nScenes, nPresets);
+  text(line, 26, y + 60, 20, false, false);
+  text("Values come from the lamps' own status reports.", 26, y + 100, 18, false, false);
+}
+
+static void drawHelp(void) {
+  text("Buttons", 26, 14, 40, true, false);
+  const char* lines[] = {
+    "Up / down", "select",
+    "Left / right", "change the value (brightness on the list)",
+    "Centre", "switch a lamp, apply a scene",
+    "Menu", "details: brightness, white, presets; on a scene: delete",
+    "Back", "close details, back to the list",
+    "Page buttons", "Lamps, Status, Help pages",
+    "Home", "reload, full screen refresh",
+    "Keyboard key", "twice: quit to the Kindle",
+  };
+  int y = 90;
+  for (int i = 0; i < 16; i += 2) {
+    text(lines[i], 26, y, 24, true, false);
+    text(lines[i + 1], 26, y + 30, 22, false, false);
+    y += 72;
+  }
+}
+
+static const char* detTitle(void) { return detRow.kind == R_GROUP ? "Lamps that are on" : lamps[detRow.index].name; }
+static void drawDetails(void) {
+  text(detTitle(), 26, 14, 40, true, false);
+  const Lamp* l = detRow.kind == R_LAMP ? &lamps[detRow.index] : NULL;
+  char v[4][48];
+  if (l) {
+    snprintf(v[0], 48, "%s", l->on < 0 ? "?" : l->on ? "on" : "off");
+    if (l->light) snprintf(v[1], 48, "%d %%", l->b); else snprintf(v[1], 48, "-");
+    if (l->light && l->mode == 'w') snprintf(v[2], 48, "%d K", l->k); else snprintf(v[2], 48, "-");
+  } else {
+    snprintf(v[0], 48, "%d on (centre: off)", lampsOn());
+    snprintf(v[1], 48, "left / right");
+    snprintf(v[2], 48, "left / right");
+  }
+  snprintf(v[3], 48, "%s", nPresets ? presets[presetCursor % nPresets].name : "none");
+  const char* labels[] = {"Power", "Brightness", "White", "Preset"};
+  int y = 90;
+  for (int i = 0; i < 4; i++) { row(y, labels[i], v[i], i == detSel, false); y += ROW; }
+  text("Left/right change at once  ·  Back closes", 26, y + 20, 20, false, false);
+}
+
+// On-screen keyboard for scene names (the K4 has no keyboard).
+static const char* KB[5][10] = {
+  {"A", "B", "C", "D", "E", "F", "G", "H", "I", "J"},
+  {"K", "L", "M", "N", "O", "P", "Q", "R", "S", "T"},
+  {"U", "V", "W", "X", "Y", "Z", "Ä", "Ö", "Ü", "ß"},
+  {"1", "2", "3", "4", "5", "6", "7", "8", "9", "0"},
+  {"Space", "Delete", "OK", 0},
+};
+static int kbCols(int r) { int n = 0; while (n < 10 && KB[r][n]) n++; return n; }
+static void drawKeyboard(void) {
+  text("Scene name", 26, 14, 36, true, false);
+  box(20, 128, W - 40, 2, true);
+  char shown[48];
+  snprintf(shown, sizeof shown, "%s_", kbText);
+  text(shown, 30, 80, 34, false, false);
+  int y = 160;
+  for (int r = 0; r < 5; r++) {
+    int n = kbCols(r), w = (W - 40) / n;
+    for (int c = 0; c < n; c++) {
+      int x = 20 + c * w;
+      bool s = r == kbR && c == kbC;
+      if (s) box(x + 2, y, w - 4, 60, true);
+      else box(x + 2, y + 58, w - 4, 1, true);
+      text(KB[r][c], x + (n == 10 ? 16 : 30), y + 14, n == 10 ? 30 : 26, n != 10, s);
+    }
+    y += 72;
+  }
+  text("Letters after the first are typed in lower case.", 26, y + 20, 18, false, false);
+  text("Centre types  ·  Back cancels  ·  same name replaces", 26, y + 48, 18, false, false);
+}
+static void kbType(const char* key) {
+  size_t len = strlen(kbText);
+  if (!strcmp(key, "Delete")) {
+    if (len) { len--; while (len && ((unsigned char)kbText[len] & 0xC0) == 0x80) len--; kbText[len] = 0; }  // UTF-8
+    return;
+  }
+  char piece[8];
+  if (!strcmp(key, "Space")) snprintf(piece, sizeof piece, " ");
+  else if (len && kbText[len - 1] != ' ') {
+    // Lower case after the first letter of a word (ASCII and the three umlauts).
+    if (!strcmp(key, "Ä")) snprintf(piece, sizeof piece, "ä");
+    else if (!strcmp(key, "Ö")) snprintf(piece, sizeof piece, "ö");
+    else if (!strcmp(key, "Ü")) snprintf(piece, sizeof piece, "ü");
+    else { snprintf(piece, sizeof piece, "%s", key); if (piece[1] == 0) piece[0] = (char)tolower((unsigned char)piece[0]); }
+  } else snprintf(piece, sizeof piece, "%s", key);
+  if (len + strlen(piece) < 30) strcat(kbText, piece);
+}
+
+static void drawConfirm(void) {
+  text("Delete scene?", 26, 14, 40, true, false);
+  text(scenes[rows[sel].index].name, 26, 100, 34, false, false);
+  text("Centre: delete  ·  Back: keep", 26, 180, 24, false, false);
+}
+
+static void render(bool flash) {
+  box(0, 0, W, H, false);
+  if (view == V_DETAILS) drawDetails();
+  else if (view == V_KEYBOARD) drawKeyboard();
+  else if (view == V_CONFIRM) drawConfirm();
+  else if (page == 0) drawLamps();
+  else if (page == 1) drawStatus();
+  else drawHelp();
+  footer();
+  show(flash);
+}
+
 // ---- Actions ---------------------------------------------------------------------------------------
-// Lowest step 10 %: at 5 % the Sofa lamp's white LEDs go out and it glows red (2026-11-20).
-static const int STEPS[] = {10, 30, 60, 100};
-static void brightnessStep(Item* it, int dir) {
-  int n = sizeof STEPS / sizeof STEPS[0], target = it->brightness;
-  if (dir > 0) { target = STEPS[n - 1]; for (int i = 0; i < n; i++) if (STEPS[i] > it->brightness) { target = STEPS[i]; break; } }
-  else { target = STEPS[0]; for (int i = n - 1; i >= 0; i--) if (STEPS[i] < it->brightness) { target = STEPS[i]; break; } }
-  char body[64];
-  if (it->on != 1 && dir > 0) { snprintf(body, sizeof body, "id=%s&on=1", it->id); post("/api/lamp", body); }
-  snprintf(body, sizeof body, "id=%s&b=%d", it->id, target);
-  char id[16];
-  snprintf(id, sizeof id, "%s", it->id);
-  if (post("/api/lamp", body))  // the post re-parsed the list: find the lamp again
-    for (int i = 0; i < count; i++) if (items[i].kind == LAMP && !strcmp(items[i].id, id)) items[i].brightnessKnown = true;
+static void lampCmd(int i, const char* what) {
+  char body[96];
+  snprintf(body, sizeof body, "id=%s&%s", lamps[i].id, what);
+  post("/api/lamp", body);
+}
+// Details open on the preset that matches the lamp's current light, if any.
+static void openDetails(Row r) {
+  view = V_DETAILS; detRow = r; detSel = 1; presetCursor = 0;
+  if (r.kind != R_LAMP) return;
+  const Lamp* l = &lamps[r.index];
+  const char* name = presetName(l->mode, l->k, l->h, l->s);
+  for (int i = 0; name && i < nPresets; i++) if (!strcmp(presets[i].name, name)) presetCursor = i;
+}
+static void onList(int key) {
+  Row r = rows[sel];
+  if (key == K_UP && sel > 0) sel--;
+  else if (key == K_DOWN && sel < nRows - 1) sel++;
+  else if (key == K_PRESS) {
+    char body[64];
+    if (r.kind == R_SCENE) { snprintf(body, sizeof body, "i=%s", scenes[r.index].idx); post("/api/scene", body); }
+    else if (r.kind == R_LAMP) lampCmd(r.index, lamps[r.index].on == 1 ? "on=0" : "on=1");
+    else if (r.kind == R_GROUP) openDetails(r);
+    else if (r.kind == R_STORE) { view = V_KEYBOARD; kbR = 4; kbC = 2; snprintf(kbText, sizeof kbText, "Scene %d", nScenes + 1); }
+    else post("/api/all", "on=0");
+  } else if ((key == K_LEFT || key == K_RIGHT) && (r.kind == R_LAMP || r.kind == R_GROUP)) {
+    int dir = key == K_RIGHT ? 1 : -1;
+    char what[32];
+    if (r.kind == R_LAMP) {
+      Lamp* l = &lamps[r.index];
+      if (l->on != 1 && dir > 0) lampCmd(r.index, "on=1");
+      snprintf(what, sizeof what, "b=%d", step(B_STEPS, 7, l->b, dir));
+      lampCmd(r.index, what);
+    } else {
+      // The lamps that are on may differ: step from the brightest of them.
+      int b = 0;
+      for (int i = 0; i < nLamps; i++) if (lamps[i].on == 1 && lamps[i].b > b) b = lamps[i].b;
+      snprintf(what, sizeof what, "b=%d", step(B_STEPS, 7, b ? b : 60, dir));
+      post("/api/group", what);
+    }
+  } else if (key == K_MENU && (r.kind == R_LAMP || r.kind == R_GROUP)) openDetails(r);
+  else if (key == K_MENU && r.kind == R_SCENE) view = V_CONFIRM;
+}
+static void onDetails(int key) {
+  bool group = detRow.kind == R_GROUP;
+  const Lamp* l = group ? NULL : &lamps[detRow.index];
+  if (key == K_BACK) { view = V_LIST; return; }
+  if (key == K_UP && detSel > 0) detSel--;
+  else if (key == K_DOWN && detSel < 3) detSel++;
+  else if (key == K_PRESS || key == K_LEFT || key == K_RIGHT) {
+    int dir = key == K_LEFT ? -1 : 1;
+    char what[48];
+    if (detSel == 0) {
+      if (group) post("/api/group", "on=0");
+      else lampCmd(detRow.index, l->on == 1 ? "on=0" : "on=1");
+      return;
+    }
+    if (key == K_PRESS && detSel != 3) return;
+    if (detSel == 1) {
+      int b = group ? 0 : l->b;
+      if (group) for (int i = 0; i < nLamps; i++) if (lamps[i].on == 1 && lamps[i].b > b) b = lamps[i].b;
+      snprintf(what, sizeof what, "b=%d", step(B_STEPS, 7, b ? b : 60, dir));
+    } else if (detSel == 2) {
+      int k = group || l->mode != 'w' ? 2700 : l->k;
+      if (group) for (int i = 0; i < nLamps; i++) if (lamps[i].on == 1 && lamps[i].mode == 'w') { k = lamps[i].k; break; }
+      snprintf(what, sizeof what, "k=%d", step(K_STEPS, 7, k, dir));
+    } else {
+      if (!nPresets) return;
+      if (key != K_PRESS) presetCursor = (presetCursor + dir + nPresets) % nPresets;
+      snprintf(what, sizeof what, "preset=%s", presets[presetCursor].idx);
+    }
+    if (group) post("/api/group", what); else lampCmd(detRow.index, what);
+  }
+}
+static void onKeyboard(int key) {
+  int n = kbCols(kbR);
+  if (key == K_BACK) { view = V_LIST; return; }
+  if (key == K_LEFT) kbC = (kbC + n - 1) % n;
+  else if (key == K_RIGHT) kbC = (kbC + 1) % n;
+  else if (key == K_UP || key == K_DOWN) {
+    kbR = (kbR + (key == K_DOWN ? 1 : 4)) % 5;
+    int m = kbCols(kbR);
+    if (kbC >= m) kbC = m - 1;
+  } else if (key == K_PRESS) {
+    if (!strcmp(KB[kbR][kbC], "OK")) {
+      char enc[128], body[160];
+      urlencode(kbText, enc, sizeof enc);
+      snprintf(body, sizeof body, "name=%s", enc);
+      if (post("/api/scene/store", body)) { snprintf(message, sizeof message, "Scene \"%s\" stored", kbText); view = V_LIST; }
+    } else kbType(KB[kbR][kbC]);
+  }
+}
+static void onConfirm(int key) {
+  if (key == K_PRESS) {
+    char body[32];
+    snprintf(body, sizeof body, "i=%s", scenes[rows[sel].index].idx);
+    if (post("/api/scene/delete", body) && sel > 0) sel--;
+    view = V_LIST;
+  } else if (key == K_BACK) view = V_LIST;
 }
 
-static void activate(Item* it) {
-  char body[64];
-  if (it->kind == SCENE) { snprintf(body, sizeof body, "i=%s", it->id); post("/api/scene", body); }
-  else if (it->kind == LAMP) { snprintf(body, sizeof body, "id=%s&on=%d", it->id, it->on == 1 ? 0 : 1); post("/api/lamp", body); }
-  else post("/api/all", "on=0");
-}
-
-// ---- Input -----------------------------------------------------------------------------------------
-static int inputs[8], inputCount = 0, maxFd = -1;
-// Next key press, or 0 after timeoutSec without one.
+// ---- Input and main loop ---------------------------------------------------------------------------
+static int inputs[8], nInputs, maxFd = -1;
 static int nextKey(int timeoutSec) {
   for (;;) {
     fd_set set;
     FD_ZERO(&set);
-    for (int i = 0; i < inputCount; i++) FD_SET(inputs[i], &set);
+    for (int i = 0; i < nInputs; i++) FD_SET(inputs[i], &set);
     struct timeval tv = {timeoutSec, 0};
-    int r = select(maxFd + 1, &set, NULL, NULL, &tv);
-    if (r <= 0) return 0;
-    for (int i = 0; i < inputCount; i++) {
+    if (select(maxFd + 1, &set, NULL, NULL, &tv) <= 0) return 0;
+    for (int i = 0; i < nInputs; i++) {
       if (!FD_ISSET(inputs[i], &set)) continue;
       struct input_event ev;
       while (read(inputs[i], &ev, sizeof ev) == (ssize_t)sizeof ev)
@@ -262,7 +527,7 @@ static int nextKey(int timeoutSec) {
     }
   }
 }
-static bool isIn(int key, const int* list, int n) { for (int i = 0; i < n; i++) if (list[i] == key) return true; return false; }
+static bool isIn(int key, const int* list) { return key == list[0] || key == list[1]; }
 
 int main(int argc, char** argv) {
   if (argc > 1) snprintf(bridgeHost, sizeof bridgeHost, "%s", argv[1]);
@@ -270,7 +535,7 @@ int main(int argc, char** argv) {
     char path[32];
     snprintf(path, sizeof path, "/dev/input/event%d", i);
     int fd = open(path, O_RDONLY | O_NONBLOCK);
-    if (fd >= 0) { inputs[inputCount++] = fd; if (fd > maxFd) maxFd = fd; }
+    if (fd >= 0) { inputs[nInputs++] = fd; if (fd > maxFd) maxFd = fd; }
   }
   fb = fbink_open();
   cfg.is_quiet = true;
@@ -278,20 +543,43 @@ int main(int argc, char** argv) {
   fbink_add_ot_font(FONT_DIR "Helvetica_LT_65_Medium.ttf", FNT_REGULAR);
   fbink_add_ot_font(FONT_DIR "Helvetica_LT_75_Bold.ttf", FNT_BOLD);
 
-  refreshState();
+  refresh();
   render(true);
+  char lastClock[8] = "";
   for (;;) {
-    int key = nextKey(30);
+    int key = nextKey(20);
     bool flash = false;
-    if (key == 0 || key == KEY_BACK_ || key == KEY_HOME_) refreshState();
-    else if (key == KEY_UP_ || isIn(key, PAGE_BACK, 2)) { if (selected > 0) selected--; }
-    else if (key == KEY_DOWN_ || isIn(key, PAGE_FWD, 2)) { if (selected < count - 1) selected++; }
-    else if (key == KEY_PRESS && count) activate(&items[selected]);
-    else if ((key == KEY_LEFT_ || key == KEY_RIGHT_) && count && items[selected].kind == LAMP)
-      brightnessStep(&items[selected], key == KEY_RIGHT_ ? 1 : -1);
-    else if (key == KEY_MENU_) { refreshState(); flash = true; }
-    else if (key == KEY_KBD_) break;
-    else continue;
+    if (key == 0) {
+      // Idle: reload; redraw only if something visible changed (e-ink redraws are slow and ghost).
+      static Lamp before[MAXN];
+      memcpy(before, lamps, sizeof lamps);
+      int n0 = nLamps, s0 = nScenes;
+      bool r0 = reachable;
+      refresh();
+      if (!memcmp(before, lamps, sizeof lamps) && n0 == nLamps && s0 == nScenes && r0 == reachable && !strcmp(lastClock, clockText)) continue;
+      snprintf(lastClock, sizeof lastClock, "%s", clockText);
+      if (view == V_KEYBOARD || view == V_CONFIRM) continue;  // don't disturb typing
+      render(false);
+      continue;
+    }
+    if (key == K_KBD) {
+      long now = time(NULL);
+      if (now < quitArmedUntil) break;
+      quitArmedUntil = now + 4;
+      render(false);
+      continue;
+    }
+    quitArmedUntil = 0;
+    if (key != K_PRESS && key != K_LEFT && key != K_RIGHT) message[0] = 0;
+    if (key == K_HOME) { refresh(); flash = true; }
+    else if (view == V_DETAILS) onDetails(key);
+    else if (view == V_KEYBOARD) onKeyboard(key);
+    else if (view == V_CONFIRM) onConfirm(key);
+    else if (isIn(key, PAGE_FWD)) page = (page + 1) % 3;
+    else if (isIn(key, PAGE_BACK)) page = (page + 2) % 3;
+    else if (key == K_BACK) { if (page) page = 0; else refresh(); }
+    else if (page == 0) onList(key);
+    else if (key == K_UP || key == K_DOWN) continue;  // nothing to select on Status/Help
     render(flash);
   }
   box(0, 0, W, H, false);

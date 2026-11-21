@@ -106,6 +106,35 @@ int main(int, char** argv) {
   check(post(m, f, "/api/time", {{"t", "1793985122000"}}).status == 200 && f.known, "browser time accepted");
   check(post(m, f, "/api/clocks", {}).status == 200 && f.clocks == 1, "clock request");
 
+  // Presets, group commands, storing scenes.
+  check(m.presets.size() == defaultPresets().size(), "default presets");
+  check(api::state(m, f).find("preset\t4\tBlue night\tc\t") != std::string::npos, "presets in state");
+  for (auto& l : m.lamps) l.on = 0;
+  kamin.on = 1;
+  Lamp& stand = *m.find("9620b155bc38");
+  stand.on = 1;
+  drain(m);
+  check(post(m, f, "/api/group", {{"b", "45"}}).status == 200, "group brightness");
+  q = drain(m);
+  check(q.size() == 2 && q[0].kind == Kind::Brightness && q[1].kind == Kind::Brightness, "group: only the lamps that are on");
+  check(post(m, f, "/api/group", {{"preset", "4"}}).status == 200 && stand.mode == 'c' && stand.hue == 230, "group preset");
+  check(post(m, f, "/api/lamp", {{"id", "96203f0f6338"}, {"preset", "0"}}).status == 200 && kamin.mode == 'w' && kamin.kelvin == 2200, "lamp preset");
+  drain(m);
+  size_t before = m.scenes.size();
+  check(post(m, f, "/api/scene/store", {{"name", "Jetzt"}}).status == 200 && m.scenes.size() == before + 1, "store scene");
+  const Scene& stored = m.scenes.back();
+  bool kaminOk = false;
+  for (auto& sl : stored.lamps) if (sl.id == kamin.id) kaminOk = sl.on && sl.brightness == 45 && !sl.colour && sl.kelvin == 2200;
+  check(stored.name == "Jetzt" && kaminOk, "stored scene has the current values");
+  check(post(m, f, "/api/scene/store", {{"name", "jetzt"}}).status == 200 && m.scenes.size() == before + 1, "same name replaces");
+  check(f.stored.find("\"presets\"") != std::string::npos, "presets stored with the scenes");
+  check(post(m, f, "/api/scene/delete", {{"i", std::to_string(before)}}).status == 200 && m.scenes.size() == before, "delete scene");
+  check(post(m, f, "/api/scenes", {}, R"({"presets":[{"name":"Abend","white":2200},{"name":"Rot","colour":{"hue":5,"saturation":90}}]})").status == 200 &&
+        m.presets.size() == 2 && m.scenes.size() == before, "import presets only, scenes kept");
+  check(post(m, f, "/api/scenes", {}, R"({"presets":[{"name":"X"}]})").status == 400 && m.presets.size() == 2, "bad preset rejected");
+  for (auto& l : m.lamps) l.on = 0;
+  check(post(m, f, "/api/group", {{"b", "50"}}).status == 400, "group needs a lamp that is on");
+
   // Without a lamp connection: commands refused, states unknown.
   f.conn = "";
   check(post(m, f, "/api/lamp", {{"id", "96203f0f6338"}, {"on", "1"}}).status == 503 && m.pending() == 0, "refuse commands without connection");

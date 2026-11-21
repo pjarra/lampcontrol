@@ -45,13 +45,38 @@ std::string Model::loadLamps(const std::string& json, std::string* warnings) {
   return "";
 }
 
+std::vector<Preset> defaultPresets() {
+  auto white = [](const char* n, int k) { Preset p; p.name = n; p.kelvin = k; return p; };
+  auto colour = [](const char* n, int h, int s) { Preset p; p.name = n; p.colour = true; p.hue = h; p.saturation = s; return p; };
+  return {white("Evening", 2200), white("Warm", 2700), white("Neutral", 4000), white("Daylight", 5500),
+          colour("Blue night", 230, 70), colour("Red", 5, 90)};
+}
+
 std::string Model::loadScenes(const std::string& json, std::string* warnings) {
   JsonDocument doc;
   if (deserializeJson(doc, json)) return "The file is not valid JSON (check commas and quotes).";
-  JsonArrayConst list = doc["scenes"].as<JsonArrayConst>();
-  if (list.isNull()) return "The file has no \"scenes\" list.";
-  std::vector<Scene> next;
+  JsonArrayConst list = doc["scenes"].as<JsonArrayConst>(), presetList = doc["presets"].as<JsonArrayConst>();
+  if (list.isNull() && presetList.isNull()) return "The file has neither a \"scenes\" nor a \"presets\" list.";
+  std::vector<Preset> nextPresets;
   std::string error;
+  for (JsonObjectConst p : presetList) {
+    Preset x;
+    x.name = clean(p["name"] | "", 20);
+    std::string where = "Preset \"" + x.name + "\"";
+    if (x.name.empty()) error = "A preset needs a name";
+    if (!p["colour"].isNull()) {
+      long h = p["colour"]["hue"] | -1L, sat = p["colour"]["saturation"] | 100L;
+      if (h < 0 || h > 360 || sat < 0 || sat > 100) error = where + ": colour needs hue 0-360 and saturation 0-100";
+      x.colour = true; x.hue = (int)h; x.saturation = (int)sat;
+    } else {
+      long k = p["white"] | 0L;
+      if (k < 2200 || k > 6600) error = where + ": needs \"white\" (2200-6600 K) or \"colour\"";
+      x.kelvin = (int)k;
+    }
+    nextPresets.push_back(x);
+  }
+  if (!presetList.isNull() && nextPresets.size() > 20) error = "At most 20 presets";
+  std::vector<Scene> next;
   for (JsonObjectConst s : list) {
     Scene scene;
     scene.name = clean(s["name"] | "", 30);
@@ -84,7 +109,8 @@ std::string Model::loadScenes(const std::string& json, std::string* warnings) {
     next.push_back(scene);
   }
   if (!error.empty()) return error;
-  scenes = next;
+  if (!list.isNull()) scenes = next;
+  if (!presetList.isNull()) presets = nextPresets.empty() ? defaultPresets() : nextPresets;
   return "";
 }
 
@@ -103,6 +129,13 @@ std::string Model::scenesJson() const {
       if (l.colour) { x["colour"]["hue"] = l.hue; x["colour"]["saturation"] = l.saturation; }
       else x["white"] = l.kelvin;
     }
+  }
+  JsonArray pl = doc["presets"].to<JsonArray>();
+  for (auto& p : presets) {
+    JsonObject o = pl.add<JsonObject>();
+    o["name"] = p.name;
+    if (p.colour) { o["colour"]["hue"] = p.hue; o["colour"]["saturation"] = p.saturation; }
+    else o["white"] = p.kelvin;
   }
   std::string out;
   serializeJson(doc, out);
@@ -160,6 +193,48 @@ bool Model::applyScene(size_t index) {
   }
   return true;
 }
+bool Model::applyPreset(Lamp& lamp, size_t index) {
+  if (index >= presets.size()) return false;
+  const Preset& p = presets[index];
+  if (p.colour) colour(lamp, p.hue, p.saturation); else white(lamp, p.kelvin);
+  return true;
+}
+int Model::groupPower(bool on) { int n = 0; for (auto& l : lamps) if (l.on == 1) { power(l, on); n++; } return n; }
+int Model::groupBrightness(int percent) { int n = 0; for (auto& l : lamps) if (l.on == 1) { brightness(l, percent); n++; } return n; }
+int Model::groupWhite(int kelvin) { int n = 0; for (auto& l : lamps) if (l.on == 1) { white(l, kelvin); n++; } return n; }
+int Model::groupColour(int hue, int saturation) { int n = 0; for (auto& l : lamps) if (l.on == 1) { colour(l, hue, saturation); n++; } return n; }
+int Model::groupPreset(size_t index) {
+  if (index >= presets.size()) return 0;
+  int n = 0;
+  for (auto& l : lamps) if (l.on == 1) { applyPreset(l, index); n++; }
+  return n;
+}
+
+std::string Model::storeScene(const std::string& rawName) {
+  std::string name = clean(rawName, 30);
+  while (!name.empty() && name.back() == ' ') name.pop_back();
+  if (name.empty()) return "The scene needs a name.";
+  Scene scene;
+  scene.name = name;
+  for (auto& l : lamps) {
+    if (l.on < 0) continue;  // unknown: leave this lamp out of the scene
+    SceneLamp x;
+    x.id = l.id; x.on = l.on == 1; x.brightness = l.brightness;
+    x.colour = l.mode == 'c'; x.kelvin = l.kelvin; x.hue = l.hue; x.saturation = l.saturation;
+    scene.lamps.push_back(x);
+  }
+  if (scene.lamps.empty()) return "No lamp state is known yet.";
+  for (auto& s : scenes) if (lower(s.name) == lower(name)) { s = scene; return ""; }
+  if (scenes.size() >= 20) return "At most 20 scenes: delete one first.";
+  scenes.push_back(scene);
+  return "";
+}
+bool Model::deleteScene(size_t index) {
+  if (index >= scenes.size()) return false;
+  scenes.erase(scenes.begin() + (long)index);
+  return true;
+}
+
 void Model::statusReport(uint16_t address, bool on, uint32_t nowMs) {
   if (Lamp* l = findAddress(address)) { l->on = on; l->reportedMs = nowMs ? nowMs : 1; }
 }
