@@ -9,6 +9,7 @@
 #include "fbink.h"
 #include <arpa/inet.h>
 #include <ctype.h>
+#include <signal.h>
 #include <fcntl.h>
 #include <linux/input.h>
 #include <netinet/in.h>
@@ -231,6 +232,43 @@ static int presetCursor;      // details: preset shown on the preset row
 static char kbText[40];
 static int kbR, kbC;
 static long quitArmedUntil;
+// Sleep: the Kindle's power manager (powerd) starts its screensaver 10 minutes after its idle timer was
+// last reset (we reset it on every button press), or when the power button is pressed; on battery it
+// suspends a minute later, which also turns Wi-Fi off. While the screensaver is on, powerd keeps the
+// buttons to itself, so only the power button wakes the Kindle. The remote follows powerd's events
+// (lipc-wait-event in a child process): it shows "Asleep" on the way down, and on the way up it ends
+// the screensaver itself (the Kindle's own interface would normally do that) and reconnects.
+static bool asleepShown;
+static int powerFd = -1;
+static pid_t powerPid = -1;
+static void touchSleepTimer(void) {
+  if (system("lipc-set-prop com.lab126.powerd touchScreenSaverTimeout 1 >/dev/null 2>&1") != 0) { /* no powerd: fine */ }
+}
+static void watchPower(void) {
+  int p[2];
+  if (pipe(p) < 0) return;
+  powerPid = fork();
+  if (powerPid == 0) {
+    dup2(p[1], 1);
+    close(p[0]);
+    close(p[1]);
+    execlp("lipc-wait-event", "lipc-wait-event", "-m", "com.lab126.powerd",
+           "goingToScreenSaver,outOfScreenSaver,resuming,outOfShutdown", (char*)NULL);
+    _exit(1);
+  }
+  close(p[1]);
+  if (powerPid < 0) { close(p[0]); return; }
+  powerFd = p[0];
+  fcntl(powerFd, F_SETFL, O_NONBLOCK);
+}
+static bool kindleActive(void) {
+  FILE* f = popen("lipc-get-prop -s com.lab126.powerd state 2>/dev/null", "r");
+  if (!f) return true;
+  char state[32] = "";
+  if (!fgets(state, sizeof state, f)) state[0] = 0;
+  pclose(f);
+  return !strncmp(state, "active", 6);
+}
 
 static void buildRows(void) {
   nRows = 0;
@@ -247,7 +285,8 @@ static void footer(void) {
   box(0, H - FOOTER, W, 1, true);
   char line[200];
   long now = time(NULL);
-  if (now < quitArmedUntil) snprintf(line, sizeof line, "Press the keyboard key again to quit");
+  if (asleepShown) snprintf(line, sizeof line, "Asleep  ·  press the power button to wake");
+  else if (now < quitArmedUntil) snprintf(line, sizeof line, "Press the keyboard key again to quit");
   else if (message[0]) snprintf(line, sizeof line, "%s", message);
   else if (!reachable) snprintf(line, sizeof line, "Bridge not reachable  ·  page %d/3", page + 1);
   else if (!via[0]) snprintf(line, sizeof line, "NO LAMP CONNECTION: nothing is sent  ·  %s", clockText);
@@ -548,13 +587,31 @@ static void onConfirm(int key) {
 
 // ---- Input and main loop ---------------------------------------------------------------------------
 static int inputs[8], nInputs, maxFd = -1;
+enum { E_SLEEP = 0x1000, E_WAKE };  // powerd events, returned like keys
 static int nextKey(int timeoutSec) {
   for (;;) {
     fd_set set;
     FD_ZERO(&set);
     for (int i = 0; i < nInputs; i++) FD_SET(inputs[i], &set);
+    if (powerFd >= 0) FD_SET(powerFd, &set);
     struct timeval tv = {timeoutSec, 0};
-    if (select(maxFd + 1, &set, NULL, NULL, &tv) <= 0) return 0;
+    if (select((powerFd > maxFd ? powerFd : maxFd) + 1, &set, NULL, NULL, &tv) <= 0) return 0;
+    if (powerFd >= 0 && FD_ISSET(powerFd, &set)) {
+      char buf[256];
+      ssize_t n = read(powerFd, buf, sizeof buf - 1);
+      if (n <= 0) { close(powerFd); powerFd = -1; continue; }  // watcher gone: no sleep handling
+      buf[n] = 0;
+      // Several events can arrive at once; the last one counts.
+      const char* down = NULL;
+      const char* up = NULL;
+      for (const char* e = buf; (e = strstr(e, "goingToScreenSaver")); e++) down = e;
+      const char* names[] = {"outOfScreenSaver", "resuming", "outOfShutdown"};
+      for (int i = 0; i < 3; i++)
+        for (const char* e = buf; (e = strstr(e, names[i])); e++) if (!up || e > up) up = e;
+      if (up && (!down || up > down)) return E_WAKE;
+      if (down) return E_SLEEP;
+      continue;
+    }
     for (int i = 0; i < nInputs; i++) {
       if (!FD_ISSET(inputs[i], &set)) continue;
       struct input_event ev;
@@ -580,12 +637,36 @@ int main(int argc, char** argv) {
   fbink_add_ot_font(FONT_DIR "Helvetica_LT_75_Bold.ttf", FNT_BOLD);
 
   refresh();
+  touchSleepTimer();
+  watchPower();
   render(true);
   char lastClock[8] = "";
   for (;;) {
     int key = nextKey(20);
     bool flash = false;
+    if (key == E_SLEEP) {
+      asleepShown = true;
+      view = V_LIST;
+      render(false);
+      continue;
+    }
+    if (key == E_WAKE) {
+      if (!asleepShown) continue;  // e.g. the screensaver ended because we ended it below
+      asleepShown = false;
+      if (!kindleActive()) {
+        if (system("lipc-set-prop com.lab126.powerd wakeUp 1 >/dev/null 2>&1") != 0) { /* nothing better to do */ }
+      }
+      // After a suspend Wi-Fi needs a few seconds to come back.
+      snprintf(message, sizeof message, "Waking up: reconnecting…");
+      render(true);
+      for (int i = 0; i < 30 && !refresh(); i++) sleep(1);
+      message[0] = 0;
+      touchSleepTimer();
+      render(false);
+      continue;
+    }
     if (key == 0) {
+      if (asleepShown) continue;
       // Idle: reload; redraw only if something visible changed (e-ink redraws are slow and ghost).
       static Lamp before[MAXN];
       memcpy(before, lamps, sizeof lamps);
@@ -598,6 +679,8 @@ int main(int argc, char** argv) {
       render(false);
       continue;
     }
+    touchSleepTimer();
+    if (asleepShown) { asleepShown = false; render(false); }  // a key got through: evidently awake
     if (key == K_KBD) {
       long now = time(NULL);
       if (now < quitArmedUntil) break;
@@ -624,5 +707,6 @@ int main(int argc, char** argv) {
   fbink_refresh(fb, 0, 0, W, H, &c);
   fbink_free_ot_fonts();
   fbink_close(fb);
+  if (powerPid > 0) kill(powerPid, SIGTERM);
   return 0;
 }

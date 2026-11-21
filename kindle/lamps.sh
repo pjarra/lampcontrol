@@ -6,7 +6,8 @@ DIR=$(dirname "$0")
 pidof lampctl >/dev/null && { echo "lampctl already running"; exit 0; }
 BRIDGE=${1:-192.168.8.146}
 cp "$DIR/lampctl" /tmp/lampctl && chmod +x /tmp/lampctl
-lipc-set-prop -- com.lab126.powerd preventScreenSaver 1
+# Allow sleep: the remote resets the idle timer on each button press (see lampctl.c).
+lipc-set-prop -- com.lab126.powerd preventScreenSaver 0
 /etc/init.d/framework stop >/dev/null 2>&1
 sleep 2
 /tmp/lampctl "$BRIDGE"
