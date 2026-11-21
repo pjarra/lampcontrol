@@ -178,6 +178,7 @@ static void row(int y, const char* label, const char* value, bool selected, bool
 static void heading(int y, const char* s) { text(s, 26, y + 8, 18, true, false); }
 
 // ---- Values ----------------------------------------------------------------------------------------
+static const char* hueName(int h);
 static const char* presetName(char mode, int k, int h, int s) {
   for (int i = 0; i < nPresets; i++) {
     const Preset* p = &presets[i];
@@ -190,7 +191,7 @@ static const char* presetName(char mode, int k, int h, int s) {
 static void lightText(const Lamp* l, char* out, size_t size) {
   const char* p = presetName(l->mode, l->k, l->h, l->s);
   if (p) snprintf(out, size, "%s", p);
-  else if (l->mode == 'c') snprintf(out, size, "colour %d°", l->h);
+  else if (l->mode == 'c') snprintf(out, size, "%s %d %%", hueName(l->h), l->s);
   else snprintf(out, size, "%d K", l->k);
 }
 static void lampValue(const Lamp* l, char* out, size_t size) {
@@ -203,6 +204,11 @@ static void lampValue(const Lamp* l, char* out, size_t size) {
 }
 static const int B_STEPS[] = {10, 20, 30, 45, 60, 80, 100};    // 5 % turned the Sofa lamp red
 static const int K_STEPS[] = {2200, 2700, 3000, 3500, 4000, 5000, 6500};
+static const int S_STEPS[] = {25, 50, 75, 100};
+// Twelve named hues, 30° apart (the lamps report hue in 254 steps, so match within ±8°).
+static const char* HUES[12] = {"red", "orange", "yellow", "lime", "green", "mint", "cyan", "sky", "blue", "violet", "purple", "pink"};
+static int hueIndex(int h) { return ((h + 15) % 360) / 30; }
+static const char* hueName(int h) { return HUES[hueIndex(h)]; }
 static int step(const int* steps, int n, int current, int dir) {
   if (dir > 0) { for (int i = 0; i < n; i++) if (steps[i] > current) return steps[i]; return steps[n - 1]; }
   for (int i = n - 1; i >= 0; i--) if (steps[i] < current) return steps[i];
@@ -218,7 +224,8 @@ static int page;              // 0 Lamps, 1 Status, 2 Help
 static int sel, first;        // list selection and scroll
 static Row rows[MAXN * 2 + 4];
 static int nRows;
-static int detSel;            // details: 0 power, 1 brightness, 2 white, 3 preset
+static int detSel;            // details: 0 power, 1 brightness, 2 white, 3 colour, 4 saturation, 5 preset
+enum { D_POWER, D_BRIGHT, D_WHITE, D_COLOUR, D_SAT, D_PRESET, D_ROWS };
 static Row detRow;            // what the details screen is for (lamp or group)
 static int presetCursor;      // details: preset shown on the preset row
 static char kbText[40];
@@ -308,7 +315,7 @@ static void drawHelp(void) {
     "Up / down", "select",
     "Left / right", "change the value (brightness on the list)",
     "Centre", "switch a lamp, apply a scene",
-    "Menu", "details: brightness, white, presets; on a scene: delete",
+    "Menu", "details: brightness, white, colour, presets; scene: delete",
     "Back", "close details, back to the list",
     "Page buttons", "Lamps, Status, Help pages",
     "Home", "reload, full screen refresh",
@@ -326,21 +333,25 @@ static const char* detTitle(void) { return detRow.kind == R_GROUP ? "Lamps that 
 static void drawDetails(void) {
   text(detTitle(), 26, 14, 40, true, false);
   const Lamp* l = detRow.kind == R_LAMP ? &lamps[detRow.index] : NULL;
-  char v[4][48];
+  char v[D_ROWS][48];
   if (l) {
-    snprintf(v[0], 48, "%s", l->on < 0 ? "?" : l->on ? "on" : "off");
-    if (l->light) snprintf(v[1], 48, "%d %%", l->b); else snprintf(v[1], 48, "-");
-    if (l->light && l->mode == 'w') snprintf(v[2], 48, "%d K", l->k); else snprintf(v[2], 48, "-");
+    bool colour = l->light && l->mode == 'c';
+    snprintf(v[D_POWER], 48, "%s", l->on < 0 ? "?" : l->on ? "on" : "off");
+    if (l->light) snprintf(v[D_BRIGHT], 48, "%d %%", l->b); else snprintf(v[D_BRIGHT], 48, "-");
+    if (l->light && !colour) snprintf(v[D_WHITE], 48, "%d K", l->k); else snprintf(v[D_WHITE], 48, "-");
+    if (colour) { snprintf(v[D_COLOUR], 48, "%s", hueName(l->h)); snprintf(v[D_SAT], 48, "%d %%", l->s); }
+    else { snprintf(v[D_COLOUR], 48, "-"); snprintf(v[D_SAT], 48, "-"); }
   } else {
-    snprintf(v[0], 48, "%d on (centre: off)", lampsOn());
-    snprintf(v[1], 48, "left / right");
-    snprintf(v[2], 48, "left / right");
+    snprintf(v[D_POWER], 48, "%d on (centre: off)", lampsOn());
+    for (int i = D_BRIGHT; i <= D_SAT; i++) snprintf(v[i], 48, "left / right");
   }
-  snprintf(v[3], 48, "%s", nPresets ? presets[presetCursor % nPresets].name : "none");
-  const char* labels[] = {"Power", "Brightness", "White", "Preset"};
+  snprintf(v[D_PRESET], 48, "%s", nPresets ? presets[presetCursor % nPresets].name : "none");
+  const char* labels[D_ROWS] = {"Power", "Brightness", "White", "Colour", "Saturation", "Preset"};
   int y = 90;
-  for (int i = 0; i < 4; i++) { row(y, labels[i], v[i], i == detSel, false); y += ROW; }
-  text("Left/right change at once  ·  Back closes", 26, y + 20, 20, false, false);
+  for (int i = 0; i < D_ROWS; i++) { row(y, labels[i], v[i], i == detSel, false); y += ROW; }
+  text("Left/right change at once", 26, y + 16, 20, false, false);
+  text("Centre on White or Colour switches between them", 26, y + 44, 20, false, false);
+  text("Back closes", 26, y + 72, 20, false, false);
 }
 
 // On-screen keyboard for scene names (the K4 has no keyboard).
@@ -452,36 +463,61 @@ static void onList(int key) {
   } else if (key == K_MENU && (r.kind == R_LAMP || r.kind == R_GROUP)) openDetails(r);
   else if (key == K_MENU && r.kind == R_SCENE) view = V_CONFIRM;
 }
+// Current value for the details screen: the lamp's, or for the group the first lamp that is on.
+static const Lamp* detLamp(char mode) {
+  if (detRow.kind == R_LAMP) return &lamps[detRow.index];
+  for (int i = 0; i < nLamps; i++) if (lamps[i].on == 1 && (!mode || lamps[i].mode == mode)) return &lamps[i];
+  return NULL;
+}
 static void onDetails(int key) {
   bool group = detRow.kind == R_GROUP;
-  const Lamp* l = group ? NULL : &lamps[detRow.index];
   if (key == K_BACK) { view = V_LIST; return; }
-  if (key == K_UP && detSel > 0) detSel--;
-  else if (key == K_DOWN && detSel < 3) detSel++;
-  else if (key == K_PRESS || key == K_LEFT || key == K_RIGHT) {
-    int dir = key == K_LEFT ? -1 : 1;
-    char what[48];
-    if (detSel == 0) {
+  if (key == K_UP && detSel > 0) { detSel--; return; }
+  if (key == K_DOWN && detSel < D_ROWS - 1) { detSel++; return; }
+  if (key != K_PRESS && key != K_LEFT && key != K_RIGHT) return;
+  int dir = key == K_LEFT ? -1 : key == K_RIGHT ? 1 : 0;
+  char what[48];
+  const Lamp* l = detLamp(0);
+  const Lamp* white = detLamp('w');
+  const Lamp* colour = detLamp('c');
+  bool inColour = l && l->light && l->mode == 'c';
+  int hue = colour && colour->light && colour->mode == 'c' ? colour->h : 0;
+  int sat = colour && colour->light && colour->mode == 'c' ? colour->s : 100;
+  switch (detSel) {
+    case D_POWER:
       if (group) post("/api/group", "on=0");
       else lampCmd(detRow.index, l->on == 1 ? "on=0" : "on=1");
       return;
-    }
-    if (key == K_PRESS && detSel != 3) return;
-    if (detSel == 1) {
-      int b = group ? 0 : l->b;
-      if (group) for (int i = 0; i < nLamps; i++) if (lamps[i].on == 1 && lamps[i].b > b) b = lamps[i].b;
+    case D_BRIGHT: {
+      if (!dir) return;
+      int b = 0;
+      if (group) { for (int i = 0; i < nLamps; i++) if (lamps[i].on == 1 && lamps[i].b > b) b = lamps[i].b; }
+      else b = l->b;
       snprintf(what, sizeof what, "b=%d", step(B_STEPS, 7, b ? b : 60, dir));
-    } else if (detSel == 2) {
-      int k = group || l->mode != 'w' ? 2700 : l->k;
-      if (group) for (int i = 0; i < nLamps; i++) if (lamps[i].on == 1 && lamps[i].mode == 'w') { k = lamps[i].k; break; }
-      snprintf(what, sizeof what, "k=%d", step(K_STEPS, 7, k, dir));
-    } else {
-      if (!nPresets) return;
-      if (key != K_PRESS) presetCursor = (presetCursor + dir + nPresets) % nPresets;
-      snprintf(what, sizeof what, "preset=%s", presets[presetCursor].idx);
+      break;
     }
-    if (group) post("/api/group", what); else lampCmd(detRow.index, what);
+    case D_WHITE: {
+      // From colour mode, the first press (or centre) switches to white at the last temperature.
+      int k = white && white->light && white->mode == 'w' ? white->k : 2700;
+      if (dir && !(inColour && !group)) k = step(K_STEPS, 7, k, dir);
+      snprintf(what, sizeof what, "k=%d", k);
+      break;
+    }
+    case D_COLOUR:
+      // From white mode, the first press (or centre) switches to colour.
+      if (dir && (inColour || group)) hue = ((hueIndex(hue) + dir + 12) % 12) * 30;
+      snprintf(what, sizeof what, "h=%d&s=%d", hue, sat);
+      break;
+    case D_SAT:
+      if (!dir || (!group && !inColour)) return;  // saturation only applies to a colour
+      snprintf(what, sizeof what, "h=%d&s=%d", hue, step(S_STEPS, 4, sat, dir));
+      break;
+    default:
+      if (!nPresets) return;
+      if (dir) presetCursor = (presetCursor + dir + nPresets) % nPresets;
+      snprintf(what, sizeof what, "preset=%s", presets[presetCursor].idx);
   }
+  if (group) post("/api/group", what); else lampCmd(detRow.index, what);
 }
 static void onKeyboard(int key) {
   int n = kbCols(kbR);
