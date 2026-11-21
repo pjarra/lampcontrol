@@ -163,6 +163,23 @@ bool Model::applyScene(size_t index) {
 void Model::statusReport(uint16_t address, bool on, uint32_t nowMs) {
   if (Lamp* l = findAddress(address)) { l->on = on; l->reportedMs = nowMs ? nowMs : 1; }
 }
+void Model::statusReport(uint16_t address, bool on, bool colour, int brightness, int mired, int hue, int saturation, uint32_t nowMs) {
+  Lamp* l = findAddress(address);
+  if (!l) return;
+  l->on = on;
+  l->reportedMs = nowMs ? nowMs : 1;
+  l->brightness = clampInt(roundInt((brightness - 2) / 2.52), 1, 100);
+  if (colour) {
+    l->mode = 'c';
+    l->hue = clampInt(roundInt(hue * 360.0 / 254), 0, 360);
+    l->saturation = clampInt(roundInt(saturation / 2.54), 0, 100);
+  } else {
+    l->mode = 'w';
+    l->kelvin = clampInt(roundInt(1e6 / (mired > 0 ? mired : 370) / 50) * 50, 2200, 6600);
+  }
+  l->lightReported = true;
+}
+
 bool Model::popCommand(Command& out) {
   if (queue.empty()) return false;
   out = queue.front();

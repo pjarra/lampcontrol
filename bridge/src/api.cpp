@@ -27,7 +27,7 @@ std::string state(Model& model, Platform& platform) {
     // Without a lamp connection the last known state may be stale: report it as unknown.
     out += "lamp\t" + l.id + "\t" + l.name + "\t" + (l.on < 0 || conn.empty() ? "?" : l.on ? "1" : "0") + "\t" + num(l.brightness) +
            "\t" + std::string(1, l.mode) + "\t" + num(l.kelvin) + "\t" + num(l.hue) + "\t" + num(l.saturation) + "\t" +
-           (l.reportedMs ? "1" : "0") + "\n";
+           (l.reportedMs ? "1" : "0") + "\t" + (l.lightReported ? "1" : "0") + "\n";
   }
   for (size_t i = 0; i < model.scenes.size(); i++) out += "scene\t" + num((long)i) + "\t" + model.scenes[i].name + "\n";
   return out;

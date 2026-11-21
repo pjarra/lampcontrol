@@ -112,7 +112,7 @@ Bytes timezonePacket(const uint8_t key[16], uint32_t unixSeconds, const std::str
 Bytes statusQueryPacket(const uint8_t key[16]) { return queryPacket(key, {0x0A, 0xFF, 0xFF}); }
 
 Status parseStatus(const uint8_t key[16], const uint8_t* data, size_t length) {
-  Status s = {false, 0, false};
+  Status s = {};
   if (length < 17) return s;
   uint8_t type = data[0];
   if (type != 0x80 && type != 0x82 && type != 0x01) return s;
@@ -121,7 +121,32 @@ Status parseStatus(const uint8_t key[16], const uint8_t* data, size_t length) {
   s.valid = true;
   s.address = (uint16_t)(b[0] | (b[1] << 8));
   s.on = (b[12] & 1) != 0;
+  s.colour = (b[12] & 2) != 0;
+  s.brightness = b[13];
+  s.mired = b[14] | (b[15] << 8);
+  s.hue = length >= 19 ? data[17] : -1;
+  s.saturation = length >= 19 ? data[18] : -1;
+  // Plausible light values only: brightness in range, and the white or colour fields present.
+  s.hasLight = s.brightness >= BRIGHTNESS_MIN && s.brightness <= BRIGHTNESS_MAX &&
+               (s.colour ? s.hue >= 0 && s.hue <= 254 && s.saturation >= 0 && s.saturation <= 254
+                         : s.mired >= MIRED_MIN - 5 && s.mired <= MIRED_MAX + 5);
   return s;
+}
+
+Bytes statusNotification(const uint8_t key[16], uint8_t type, uint16_t address, bool on, bool colour, int brightness,
+                         int mired, int hue, int saturation) {
+  uint8_t plain[16] = {(uint8_t)(address & 255), (uint8_t)(address >> 8), 1, 0, 0, 0x96, 0x20, 1, 2, 3, 0x38, 1};
+  plain[12] = (uint8_t)((on ? 1 : 0) | (colour ? 2 : 0));
+  plain[13] = (uint8_t)brightness;
+  plain[14] = colour ? 0xFF : (uint8_t)(mired & 255);
+  plain[15] = colour ? 0xFF : (uint8_t)(mired >> 8);
+  Bytes out(20);
+  out[0] = type;
+  attEncrypt(key, plain, out.data() + 1);
+  out[17] = colour ? (uint8_t)hue : 0xFF;
+  out[18] = colour ? (uint8_t)saturation : 0xFF;
+  out[19] = 0x60;
+  return out;
 }
 
 std::string hex(const Bytes& bytes) {
@@ -172,14 +197,15 @@ std::string selfTest() {
     {statusQueryPacket(key), "02278f3e9880859d7ce4183806fe6aa70d", "status query (lampsync vector)"},
   };
   for (auto& c : checks) if (hex(c.got) != c.want) return c.what;
-  // Status round trip: a block encrypted with the key decodes to address and power again.
+  // Status decoding, with the byte layout seen on hardware (Kamin, 2026-11-21).
   {
-    uint8_t plain[16] = {0x37, 0x2A}, frame[17];
-    plain[12] = 1;
-    frame[0] = 0x80;
-    attEncrypt(key, plain, frame + 1);
-    Status st = parseStatus(key, frame, sizeof frame);
-    if (!st.valid || st.address != 0x2A37 || !st.on) return "status decode";
+    Bytes w = statusNotification(key, 0x82, 0x7780, true, false, 0x4e, 0x0172, 0, 0);
+    Status st = parseStatus(key, w.data(), w.size());
+    if (!st.valid || st.address != 0x7780 || !st.on || st.colour || !st.hasLight || st.brightness != 0x4e || st.mired != 370)
+      return "status decode (white)";
+    Bytes c = statusNotification(key, 0x82, 0x7780, false, true, 0x1b, 0, 0xa9, 0xfe);
+    st = parseStatus(key, c.data(), c.size());
+    if (!st.valid || st.on || !st.colour || !st.hasLight || st.hue != 0xa9 || st.saturation != 0xfe) return "status decode (colour)";
   }
   memset(key, 0, 16); memset(combined, 0, 16);
   return "";

@@ -13,6 +13,7 @@ struct Lamp {
   char mode = 'w';           // 'w' white, 'c' colour
   int kelvin = 2700, hue = 30, saturation = 100;  // degrees / percent
   uint32_t reportedMs = 0;   // last status notification (0 = never)
+  bool lightReported = false;  // brightness/white/colour came from the lamp itself (not just set by us)
 };
 
 struct SceneLamp { std::string id; bool on = true; int brightness = 50; bool colour = false; int kelvin = 2700, hue = 0, saturation = 100; };
@@ -48,6 +49,8 @@ class Model {
   void all(bool on);
   bool applyScene(size_t index);
   void statusReport(uint16_t address, bool on, uint32_t nowMs);
+  // Full report (wire values as in the status message): brightness 2..254, mired, hue/sat 0..254.
+  void statusReport(uint16_t address, bool on, bool colour, int brightness, int mired, int hue, int saturation, uint32_t nowMs);
 
   bool popCommand(Command& out);
   void clearQueue() { queue.clear(); }

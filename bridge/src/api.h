@@ -3,7 +3,8 @@
 //
 //   GET  /api/state            bridge\t<connected lamp or ->\t<message>
 //                              time\t<1 if the clock is known, else 0>\t<local HH:MM:SS, if known>
-//                              lamp\t<id>\t<name>\t<on 1|0|?>\t<brightness %>\t<w|c>\t<kelvin>\t<hue>\t<sat %>\t<reported 1|0>
+//                              lamp\t<id>\t<name>\t<on 1|0|?>\t<brightness %>\t<w|c>\t<kelvin>\t<hue>\t<sat %>\t<reported 1|0>\t<light reported 1|0>
+//                              (light reported: brightness/white/colour come from the lamp's own status)
 //                              scene\t<index>\t<name>
 //   Light commands answer 503 while the bridge has no lamp connection (nothing is queued).
 //   POST /api/lamp   id=<id> and one of: on=0|1, b=<1..100>, k=<kelvin>, h=<0..360>&s=<0..100>

@@ -225,7 +225,11 @@ void task(void*) {
         Text t; rawNotes[k] = r;
       }
       awox::Status s = awox::parseStatus(key, n.data, n.length);
-      if (s.valid) { ModelGuard g; model->statusReport(s.address, s.on, millis()); }
+      if (s.valid) {
+        ModelGuard g;
+        if (s.hasLight) model->statusReport(s.address, s.on, s.colour, s.brightness, s.mired, s.hue, s.saturation, millis());
+        else model->statusReport(s.address, s.on, millis());
+      }
     }
     Command c;
     bool have;

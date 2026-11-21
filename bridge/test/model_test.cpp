@@ -94,6 +94,11 @@ int main(int, char** argv) {
 
   // State text for the pages.
   m.statusReport(0x2A37, false, 5000);
+  // Full reports: wire values from the status message become percent / Kelvin / degrees.
+  m.statusReport(0x7780, true, false, 0x4e, 0x00fa, 0, 0, 6000);
+  check(kamin.on == 1 && kamin.brightness == 30 && kamin.mode == 'w' && kamin.kelvin == 4000 && kamin.lightReported, "status: white");
+  m.statusReport(0x7780, true, true, 0x1b, 0xffff, 0xa9, 0xfe, 7000);
+  check(kamin.brightness == 10 && kamin.mode == 'c' && kamin.hue == 240 && kamin.saturation == 100, "status: colour");
   std::string s = api::state(m, f);
   check(s.find("bridge\tKamin\tconnected\n") == 0, "state header");
   check(s.find("lamp\t9620b155bc38\tStandleuchte\t0\t20\tc\t") != std::string::npos, "state lamp line: " + s);

@@ -37,10 +37,20 @@ Bytes clockPacket(const uint8_t key[16], uint32_t unixSeconds, int32_t utcOffset
 Bytes timezonePacket(const uint8_t key[16], uint32_t unixSeconds, const std::string& posixTZ);
 Bytes statusQueryPacket(const uint8_t key[16]);
 
-// Status notification (characteristic …1911): type byte + 16 encrypted bytes. Power is bit 0 of
-// byte 12 of the decrypted block for types 0x80/0x82/0x01 (as tools/lampsync.swift, verified on macOS).
-struct Status { bool valid; uint16_t address; bool on; };
+// Status notification (characteristic …1911): type byte, 16 encrypted bytes, then a short clear tail.
+// Decrypted block (types 0x80/0x82/0x01), decoded on hardware 2026-11-21 by setting known values:
+//   [0..1] mesh address LE   [5..10] advertisement id   [12] bit 0 on, bit 1 colour mode
+//   [13] brightness 2..254   [14..15] white in mired LE (0xFFFF in colour mode)
+// Clear tail [0..1]: hue 0..254, saturation 0..254 (0xFFFF in white mode).
+struct Status {
+  bool valid; uint16_t address; bool on;
+  bool hasLight;          // brightness/white/colour present (block decoded; tail present for colour)
+  bool colour; int brightness; int mired; int hue; int saturation;
+};
 Status parseStatus(const uint8_t key[16], const uint8_t* data, size_t length);
+// For tests: an encrypted status notification as a lamp would send it.
+Bytes statusNotification(const uint8_t key[16], uint8_t type, uint16_t address, bool on, bool colour, int brightness,
+                         int mired, int hue, int saturation);
 
 // Same checks as protocol.js selfTest(). Returns the name of the first failing check, or "" if all pass.
 std::string selfTest();
