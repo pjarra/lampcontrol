@@ -283,6 +283,14 @@ static void buildRows(void) {
 }
 static int lampsOn(void) { int n = 0; for (int i = 0; i < nLamps; i++) if (lamps[i].on == 1) n++; return n; }
 
+// Battery percentage from the fuel gauge (sysfs: no lipc call, nothing in the system log); -1 unknown.
+static int battery(void) {
+  FILE* f = fopen("/sys/devices/system/yoshi_battery/yoshi_battery0/battery_capacity", "r");
+  int pct = -1;
+  if (f) { if (fscanf(f, "%d", &pct) != 1) pct = -1; fclose(f); }
+  return pct;
+}
+static int shownBattery = -1;
 static void footer(void) {
   box(0, H - FOOTER, W, 1, true);
   char line[200];
@@ -294,6 +302,12 @@ static void footer(void) {
   else if (!via[0]) snprintf(line, sizeof line, "NO LAMP CONNECTION: nothing is sent  ·  %s", clockText);
   else snprintf(line, sizeof line, "via %s  ·  %s  ·  page %d/3", via, clockText[0] ? clockText : "--:--", page + 1);
   text(line, 20, H - FOOTER + 14, 20, false, false);
+  shownBattery = battery();
+  if (shownBattery >= 0) {
+    char pct[8];
+    snprintf(pct, sizeof pct, "%d%%", shownBattery);
+    text(pct, W - 20 - 12 * (int)strlen(pct), H - FOOTER + 14, 20, false, false);  // ~right-aligned
+  }
 }
 
 static void drawLamps(void) {
@@ -719,7 +733,7 @@ int main(int argc, char** argv) {
       int n0 = nLamps, s0 = nScenes;
       bool r0 = reachable;
       refresh();
-      if (!memcmp(before, lamps, sizeof lamps) && n0 == nLamps && s0 == nScenes && r0 == reachable && !strcmp(lastClock, clockText)) continue;
+      if (!memcmp(before, lamps, sizeof lamps) && n0 == nLamps && s0 == nScenes && r0 == reachable && !strcmp(lastClock, clockText) && battery() == shownBattery) continue;
       snprintf(lastClock, sizeof lastClock, "%s", clockText);
       if (view == V_KEYBOARD || view == V_CONFIRM) continue;  // don't disturb typing
       render(false);
