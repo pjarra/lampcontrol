@@ -42,7 +42,9 @@ Response handle(Model& model, Platform& platform, const Request& r) {
   const std::string& p = r.path;
   bool post = r.method == "POST";
   if (p == "/api/state") return ok(state(model, platform));
-  if (p == "/api/info") return ok(platform.info());
+  if (p == "/api/info")  // the caller holds the model lock, so the counters are read here
+    return ok(platform.info() + "commands sent: " + num((long)model.commandsSent) + ", re-sent after no confirmation: " +
+              num((long)model.commandsResent) + ", given up: " + num((long)model.gaveUp) + "\n");
   if (p == "/api/raw") return ok(platform.raw());
   if (!post) return {405, "use POST"};
   // Light commands are refused, not queued, while the bridge has no lamp connection: a queued

@@ -164,32 +164,61 @@ void Model::enqueue(const Command& c) {
   }
   queue.push_back(c);
 }
-void Model::power(Lamp& lamp, bool on) { lamp.on = on; enqueue({lamp.address, Kind::Power, on ? 1 : 0, 0}); }
+// Each setter records the wish (Lamp::Want) and, unless send is false, queues the command.
+static void wish(Lamp& l) { if (!l.want.active) { l.want = Lamp::Want(); l.want.active = true; } l.want.retries = 0; }
+static Command powerCmd(const Lamp& l, bool on) { return {l.address, Kind::Power, on ? 1 : 0, 0}; }
+static Command brightnessCmd(const Lamp& l, int pct) { return {l.address, Kind::Brightness, percentToWire(pct), 0}; }
+static Command whiteCmd(const Lamp& l, int k) { return {l.address, Kind::Temperature, kelvinToMired(k), 0}; }
+static Command colourCmd(const Lamp& l, int h, int s) { return {l.address, Kind::Color, hueToByte(h), saturationToByte(s)}; }
+
+void Model::power(Lamp& lamp, bool on) {
+  lamp.on = on; wish(lamp); lamp.want.on = on;
+  enqueue(powerCmd(lamp, on));
+}
 void Model::brightness(Lamp& lamp, int percent) {
-  lamp.brightness = clampInt(percent, 1, 100);
-  enqueue({lamp.address, Kind::Brightness, percentToWire(lamp.brightness), 0});
+  lamp.brightness = clampInt(percent, 1, 100); wish(lamp); lamp.want.brightness = lamp.brightness;
+  enqueue(brightnessCmd(lamp, lamp.brightness));
 }
 void Model::white(Lamp& lamp, int kelvin) {
   lamp.mode = 'w'; lamp.kelvin = clampInt(kelvin, 2200, 6600);
-  enqueue({lamp.address, Kind::Temperature, kelvinToMired(lamp.kelvin), 0});
+  wish(lamp); lamp.want.mode = 'w'; lamp.want.kelvin = lamp.kelvin;
+  enqueue(whiteCmd(lamp, lamp.kelvin));
 }
 void Model::colour(Lamp& lamp, int hue, int saturation) {
   lamp.mode = 'c'; lamp.hue = clampInt(hue, 0, 360); lamp.saturation = clampInt(saturation, 0, 100);
-  enqueue({lamp.address, Kind::Color, hueToByte(lamp.hue), saturationToByte(lamp.saturation)});
+  wish(lamp); lamp.want.mode = 'c'; lamp.want.hue = lamp.hue; lamp.want.saturation = lamp.saturation;
+  enqueue(colourCmd(lamp, lamp.hue, lamp.saturation));
 }
 void Model::all(bool on) {
-  for (auto& l : lamps) l.on = on;
+  for (auto& l : lamps) { l.on = on; wish(l); l.want.on = on; }
   enqueue({awox::BROADCAST, Kind::Power, on ? 1 : 0, 0});
 }
+
+static bool near(int a, int b, int tolerance) { return a - b <= tolerance && b - a <= tolerance; }
+static bool hueNear(int a, int b) { int d = ((a - b) % 360 + 360) % 360; return d <= 4 || d >= 356; }
+
+// A scene skips what a lamp has already reported (fewer commands: a scene is quicker and less gets
+// lost); the check after sending covers the rest.
 bool Model::applyScene(size_t index) {
   if (index >= scenes.size()) return false;
   for (auto& sl : scenes[index].lamps) {
     Lamp* lamp = find(sl.id);
     if (!lamp) continue;
-    power(*lamp, sl.on);
+    Lamp& l = *lamp;
+    bool known = l.reportedMs && !l.want.active;  // the shown state is the lamp's own report
+    bool lightKnown = known && l.lightReported && l.on == 1;
+    if (!known || l.on != (sl.on ? 1 : 0)) power(l, sl.on);
+    else { wish(l); l.want.on = sl.on; }
     if (!sl.on) continue;
-    brightness(*lamp, sl.brightness);
-    if (sl.colour) colour(*lamp, sl.hue, sl.saturation); else white(*lamp, sl.kelvin);
+    if (!lightKnown || !near(l.brightness, sl.brightness, 1)) brightness(l, sl.brightness);
+    else { wish(l); l.want.brightness = sl.brightness; }
+    if (sl.colour) {
+      if (!lightKnown || l.mode != 'c' || !hueNear(l.hue, sl.hue) || !near(l.saturation, sl.saturation, 2)) colour(l, sl.hue, sl.saturation);
+      else { l.want.mode = 'c'; l.want.hue = sl.hue; l.want.saturation = sl.saturation; }
+    } else {
+      if (!lightKnown || l.mode != 'w' || !near(l.kelvin, sl.kelvin, 60)) white(l, sl.kelvin);
+      else { l.want.mode = 'w'; l.want.kelvin = sl.kelvin; }
+    }
   }
   return true;
 }
@@ -236,23 +265,71 @@ bool Model::deleteScene(size_t index) {
 }
 
 void Model::statusReport(uint16_t address, bool on, uint32_t nowMs) {
-  if (Lamp* l = findAddress(address)) { l->on = on; l->reportedMs = nowMs ? nowMs : 1; }
+  Lamp* l = findAddress(address);
+  if (!l) return;
+  l->reportedMs = nowMs ? nowMs : 1;
+  if (judge(*l, on, false, false, 0, 0, 0, 0, nowMs)) l->on = on;
 }
 void Model::statusReport(uint16_t address, bool on, bool colour, int brightness, int mired, int hue, int saturation, uint32_t nowMs) {
   Lamp* l = findAddress(address);
   if (!l) return;
-  l->on = on;
   l->reportedMs = nowMs ? nowMs : 1;
-  l->brightness = clampInt(roundInt((brightness - 2) / 2.52), 1, 100);
-  if (colour) {
-    l->mode = 'c';
-    l->hue = clampInt(roundInt(hue * 360.0 / 254), 0, 360);
-    l->saturation = clampInt(roundInt(saturation / 2.54), 0, 100);
-  } else {
-    l->mode = 'w';
-    l->kelvin = clampInt(roundInt(1e6 / (mired > 0 ? mired : 370) / 50) * 50, 2200, 6600);
-  }
+  int pct = clampInt(roundInt((brightness - 2) / 2.52), 1, 100);
+  int k = clampInt(roundInt(1e6 / (mired > 0 ? mired : 370) / 50) * 50, 2200, 6600);
+  int h = clampInt(roundInt(hue * 360.0 / 254), 0, 360), s = clampInt(roundInt(saturation / 2.54), 0, 100);
+  if (!judge(*l, on, true, colour, pct, k, h, s, nowMs)) return;
+  l->on = on;
+  l->brightness = pct;
+  if (colour) { l->mode = 'c'; l->hue = h; l->saturation = s; }
+  else { l->mode = 'w'; l->kelvin = k; }
   l->lightReported = true;
+}
+
+const uint32_t SETTLE_MS = 1000;    // a report this soon after a command may predate it
+const uint32_t GIVE_UP_MS = 30000;  // no confirmation this long after the last send: stop waiting
+const int MAX_RETRIES = 3;
+
+bool Model::pendingFor(uint16_t address) const {
+  for (auto& c : queue) if (c.dest == address || c.dest == awox::BROADCAST) return true;
+  return false;
+}
+bool Model::judge(Lamp& l, bool on, bool hasLight, bool colour, int pct, int k, int h, int s, uint32_t nowMs) {
+  Lamp::Want& w = l.want;
+  if (!w.active) return true;
+  if (pendingFor(l.address)) return false;              // more to come; judge afterwards
+  if (!w.sentMs) { w = Lamp::Want(); return true; }      // nothing was sent (all skipped): report is the truth
+  if (nowMs - w.sentMs < SETTLE_MS) return false;
+  if (nowMs - w.sentMs > GIVE_UP_MS) { w = Lamp::Want(); return true; }
+  std::vector<Command> missing;
+  bool unsure = false;  // a part that only a full report can confirm
+  if (w.on >= 0 && (on ? 1 : 0) != w.on) missing.push_back(powerCmd(l, w.on == 1));
+  else if (on) {
+    if (!hasLight) unsure = w.brightness >= 0 || w.mode;
+    else {
+      if (w.brightness >= 0 && !near(pct, w.brightness, 2)) missing.push_back(brightnessCmd(l, w.brightness));
+      if (w.mode == 'w' && (colour || !near(k, w.kelvin, 100))) missing.push_back(whiteCmd(l, w.kelvin));
+      if (w.mode == 'c' && (!colour || !hueNear(h, w.hue) || !near(s, w.saturation, 3))) missing.push_back(colourCmd(l, w.hue, w.saturation));
+    }
+  }
+  if (missing.empty()) {
+    if (unsure) return false;  // wait for a full report (or give up after GIVE_UP_MS)
+    w = Lamp::Want();
+    return true;
+  }
+  if (w.retries >= MAX_RETRIES) { w = Lamp::Want(); gaveUp++; return true; }  // show what the lamp really does
+  w.retries++;
+  commandsResent += (uint32_t)missing.size();
+  for (auto& c : missing) enqueue(c);
+  return false;
+}
+void Model::sent(const Command& c, uint32_t nowMs) {
+  commandsSent++;
+  for (auto& l : lamps)
+    if (l.want.active && (c.dest == l.address || c.dest == awox::BROADCAST)) l.want.sentMs = nowMs ? nowMs : 1;
+}
+bool Model::verifying() const {
+  for (auto& l : lamps) if (l.want.active && l.want.sentMs) return true;
+  return false;
 }
 
 bool Model::popCommand(Command& out) {

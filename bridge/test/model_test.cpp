@@ -135,6 +135,48 @@ int main(int, char** argv) {
   for (auto& l : m.lamps) l.on = 0;
   check(post(m, f, "/api/group", {{"b", "50"}}).status == 400, "group needs a lamp that is on");
 
+  {
+    // Lost commands: the lamp's report is compared with what was asked for, missing parts are re-sent.
+    Model v;
+    v.loadLamps(readFile(dir + "../../lamps.json"));
+    Lamp& sofa = *v.find("96206cca5238");
+    auto send = [&](uint32_t t) { std::vector<Command> out; Command c; while (v.popCommand(c)) { v.sent(c, t); out.push_back(c); } return out; };
+    auto report = [&](bool on, bool colour, int pct, int k, int h, int s, uint32_t t) {
+      v.statusReport(sofa.address, on, colour, percentToWire(pct), colour ? 0xffff : kelvinToMired(k), hueToByte(h), saturationToByte(s), t);
+    };
+    report(true, true, 100, 2700, 30, 100, 1000);  // orange, full
+    check(sofa.mode == 'c' && !sofa.want.active, "report shown when nothing is asked");
+    v.scenes = {Scene{"Abend", {SceneLamp{sofa.id, true, 45, false, 2700, 0, 100}}}};
+    check(v.applyScene(0), "scene");
+    auto q = send(2000);
+    check(q.size() == 2 && q[0].kind == Kind::Brightness && q[1].kind == Kind::Temperature, "scene skips what the lamp already has (power): " + std::to_string(q.size()));
+    report(true, true, 45, 2700, 30, 100, 2500);  // too early to judge
+    check(v.pending() == 0 && sofa.mode == 'w' && sofa.brightness == 45, "report right after sending: target still shown");
+    report(true, true, 45, 2700, 30, 100, 3500);  // white got lost
+    q = send(3600);
+    check(q.size() == 1 && q[0].kind == Kind::Temperature && sofa.want.retries == 1, "lost white command sent again");
+    report(true, false, 45, 2700, 0, 0, 5000);
+    check(!sofa.want.active && sofa.mode == 'w' && !v.verifying(), "confirmed: done");
+    v.brightness(sofa, 80);
+    send(6000);
+    for (int i = 0; i < 3; i++) { report(true, false, 45, 2700, 0, 0, 7500 + i * 2000); send(7600 + i * 2000); }
+    check(sofa.want.retries == 3 && sofa.brightness == 80, "three retries");
+    report(true, false, 45, 2700, 0, 0, 14000);
+    check(!sofa.want.active && sofa.brightness == 45, "given up: the page shows what the lamp really does");
+    v.power(sofa, false);
+    send(15000);
+    v.statusReport(sofa.address, true, 16500);  // short report, still on
+    q = send(16600);
+    check(q.size() == 1 && q[0].kind == Kind::Power && q[0].a == 0, "lost off command sent again");
+    v.statusReport(sofa.address, false, 18000);
+    check(!sofa.want.active && sofa.on == 0, "off confirmed");
+    v.all(true);
+    send(19000);
+    check(v.verifying(), "all on: verifying");
+    v.clearQueue();
+    check(!v.verifying(), "reconnect forgets what was asked");
+  }
+
   // Without a lamp connection: commands refused, states unknown.
   f.conn = "";
   check(post(m, f, "/api/lamp", {{"id", "96203f0f6338"}, {"on", "1"}}).status == 503 && m.pending() == 0, "refuse commands without connection");

@@ -16,6 +16,8 @@ const NimBLEUUID STATUS("00010203-0405-0607-0809-0a0b0c0d1911");
 const NimBLEUUID COMMAND("00010203-0405-0607-0809-0a0b0c0d1912");
 const NimBLEUUID PAIR("00010203-0405-0607-0809-0a0b0c0d1914");
 const uint32_t MIN_GAP_MS = 350;          // closer commands are swallowed by the lamp (upstream notes)
+// After commands: ask soon (and then every 1.5 s) whether they arrived; missing parts are re-sent.
+const uint32_t VERIFY_AFTER_MS = 1000, VERIFY_EVERY_MS = 1500;
 const uint32_t STATUS_EVERY_MS = 10000;   // status query, as the AwoX app polls (every 5 s there)
 const int CLOCK_HOUR = 3, CLOCK_MINUTE = 30;
 
@@ -233,7 +235,13 @@ void task(void*) {
     }
     Command c;
     bool have;
-    { ModelGuard g; have = millis() - lastWrite >= MIN_GAP_MS && model->popCommand(c); }
+    bool verifying;
+    {
+      ModelGuard g;
+      have = millis() - lastWrite >= MIN_GAP_MS && model->popCommand(c);
+      if (have) model->sent(c, millis());
+      verifying = model->verifying();
+    }
     if (have) {
       awox::Bytes p = c.kind == Kind::Power ? awox::powerPacket(key, c.a == 1, c.dest)
                     : c.kind == Kind::Brightness ? awox::brightnessPacket(key, c.a, c.dest)
@@ -241,7 +249,8 @@ void task(void*) {
                     : awox::colorPacket(key, c.a, c.b, c.dest);
       // A failed write may still have reached the lamp: never retry it, reconnect instead.
       if (!write(commandChar, p)) { setStatus("Write failed, reconnecting"); dropConnection(); }
-    } else if (millis() - lastQuery >= STATUS_EVERY_MS && millis() - lastWrite >= MIN_GAP_MS) {
+    } else if (millis() - lastQuery >= (verifying ? VERIFY_EVERY_MS : STATUS_EVERY_MS) &&
+               millis() - lastWrite >= (verifying ? VERIFY_AFTER_MS : MIN_GAP_MS)) {
       lastQuery = millis();
       if (!write(commandChar, awox::statusQueryPacket(key))) { setStatus("Status query failed, reconnecting"); dropConnection(); }
     }

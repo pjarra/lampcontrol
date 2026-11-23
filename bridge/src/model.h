@@ -14,6 +14,16 @@ struct Lamp {
   int kelvin = 2700, hue = 30, saturation = 100;  // degrees / percent
   uint32_t reportedMs = 0;   // last status notification (0 = never)
   bool lightReported = false;  // brightness/white/colour came from the lamp itself (not just set by us)
+  // What the last commands asked for, until the lamp's own status report confirms it. Commands get
+  // lost in the mesh now and then (2026-11-23: one of a scene's 15); missing parts are sent again.
+  struct Want {
+    bool active = false;
+    int on = -1, brightness = -1;  // -1: not asked for
+    char mode = 0;                 // 0: not asked for
+    int kelvin = 0, hue = 0, saturation = 0;
+    uint32_t sentMs = 0;           // last command to this lamp actually sent (0: none yet)
+    int retries = 0;
+  } want;
 };
 
 struct SceneLamp { std::string id; bool on = true; int brightness = 50; bool colour = false; int kelvin = 2700, hue = 0, saturation = 100; };
@@ -69,10 +79,18 @@ class Model {
   void statusReport(uint16_t address, bool on, bool colour, int brightness, int mired, int hue, int saturation, uint32_t nowMs);
 
   bool popCommand(Command& out);
-  void clearQueue() { queue.clear(); }
+  void sent(const Command& c, uint32_t nowMs);  // the mesh task wrote c to the lamps
+  // Lamps are waiting for a status report that confirms (or not) the commands sent to them.
+  bool verifying() const;
+  uint32_t commandsSent = 0, commandsResent = 0, gaveUp = 0;  // for /api/info
+  void clearQueue() { queue.clear(); for (auto& l : lamps) l.want = Lamp::Want(); }
   size_t pending() const { return queue.size(); }
 
  private:
   std::vector<Command> queue;
   void enqueue(const Command& c);
+  bool pendingFor(uint16_t address) const;
+  // Compares a report with the lamp's Want and sends missing parts again. True: the report may
+  // replace what the pages show (no Want, confirmed or given up); false: keep showing the target.
+  bool judge(Lamp& l, bool on, bool hasLight, bool colour, int brightness, int kelvin, int hue, int saturation, uint32_t nowMs);
 };
